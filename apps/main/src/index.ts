@@ -3,8 +3,8 @@ import { callWindowExpose } from "@follow/shared/bridge"
 import { APP_PROTOCOL } from "@follow/shared/constants"
 import { env } from "@follow/shared/env"
 import { imageRefererMatches, selfRefererMatches } from "@follow/shared/image"
+import { parse } from "cookie-es"
 import { app, BrowserWindow, session } from "electron"
-import type { Cookie } from "electron/main"
 import squirrelStartup from "electron-squirrel-startup"
 
 import { DEVICE_ID } from "./constants/system"
@@ -76,7 +76,7 @@ function bootstrap() {
     mainWindow = createMainWindow()
 
     // restore cookies
-    const cookies = store.get("cookies") as Cookie[]
+    const cookies = store.get("cookies")
     if (cookies) {
       Promise.all(
         cookies.map((cookie) => {
@@ -108,7 +108,7 @@ function bootstrap() {
         userAgent = userAgent.replace(/\s?Electron\/[\d.]+/, "")
         userAgent = userAgent.replace(/\s?Follow\/[\d.a-zA-Z-]+/, "")
       }
-      details.requestHeaders["User-Agent"] = userAgent
+      details.requestHeaders["User-Agent"] = userAgent!
 
       // set referer and origin
       if (selfRefererMatches.some((item) => details.url.startsWith(item))) {
@@ -124,6 +124,39 @@ function bootstrap() {
 
       callback({ cancel: false, requestHeaders: details.requestHeaders })
     })
+
+    // handle session cookie when sign in with email in electron
+    session.defaultSession.webRequest.onHeadersReceived(
+      {
+        urls: [
+          `${apiURL}/better-auth/sign-in/email?*`,
+          `${apiURL}/better-auth/two-factor/verify-totp?*`,
+        ],
+      },
+      (detail, callback) => {
+        const { responseHeaders } = detail
+        if (responseHeaders?.["set-cookie"]) {
+          const cookies = responseHeaders["set-cookie"] as string[]
+          cookies.forEach((cookie) => {
+            const cookieObj = parse(cookie)
+            Object.keys(cookieObj).forEach((name) => {
+              const value = cookieObj[name]
+              mainWindow.webContents.session.cookies.set({
+                url: apiURL,
+                name,
+                value,
+                secure: true,
+                httpOnly: true,
+                domain: new URL(apiURL).hostname,
+                sameSite: "no_restriction",
+              })
+            })
+          })
+        }
+
+        callback({ cancel: false, responseHeaders })
+      },
+    )
 
     app.on("activate", () => {
       // On macOS it's common to re-create a window in the app when the
@@ -194,16 +227,20 @@ function bootstrap() {
 
       if (ck && apiURL) {
         setBetterAuthSessionCookie(ck)
-        const cookie = atob(ck)
-        mainWindow.webContents.session.cookies.set({
-          url: apiURL,
-          name: cookie.split("=")[0],
-          value: cookie.split("=")[1],
-          secure: true,
-          httpOnly: true,
-          domain: new URL(apiURL).hostname,
-          sameSite: "no_restriction",
+        const cookie = parse(atob(ck))
+        Object.keys(cookie).forEach((name) => {
+          const value = cookie[name]
+          mainWindow.webContents.session.cookies.set({
+            url: apiURL,
+            name,
+            value,
+            secure: true,
+            httpOnly: true,
+            domain: new URL(apiURL).hostname,
+            sameSite: "no_restriction",
+          })
         })
+
         userId && (await callWindowExpose(mainWindow).clearIfLoginOtherAccount(userId))
         mainWindow.reload()
 

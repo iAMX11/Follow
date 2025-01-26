@@ -23,7 +23,7 @@ import { setWhoami, useWhoami } from "~/atoms/user"
 import { toastFetchError } from "~/lib/error-parser"
 
 const formSchema = z.object({
-  handle: z.string().max(50),
+  handle: z.string().max(50).optional(),
   name: z.string().min(3).max(50),
   image: z.string().url(),
 })
@@ -41,7 +41,7 @@ export const ProfileSettingForm = ({
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      handle: user?.handle || "",
+      handle: user?.handle || undefined,
       name: user?.name || "",
       image: user?.image || "",
     },

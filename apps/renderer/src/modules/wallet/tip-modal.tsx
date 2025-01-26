@@ -15,6 +15,7 @@ import { UserAvatar } from "~/modules/user/UserAvatar"
 import { useWallet, useWalletTipMutation } from "~/queries/wallet"
 
 import { useFeedClaimModal } from "../claim"
+import { useTOTPModalWrapper } from "../profile/hooks"
 import { Balance } from "./balance"
 
 const DEFAULT_RECOMMENDED_TIP = 10
@@ -31,7 +32,7 @@ const Loading = () => (
 )
 
 export const TipModalContent: FC<{
-  userId?: string
+  userId?: string | null
   feedId: string
   entryId: string
 }> = (props) => {
@@ -43,7 +44,7 @@ export const TipModalContent: FC<{
   return <TipModalContent_ {...props} />
 }
 const TipModalContent_: FC<{
-  userId?: string
+  userId?: string | null
   feedId: string
   entryId: string
 }> = ({ userId, feedId, entryId }) => {
@@ -56,6 +57,7 @@ const TipModalContent_: FC<{
   const balanceBigInt = cPowerBigInt + dPowerBigInt
 
   const tipMutation = useWalletTipMutation()
+  const present = useTOTPModalWrapper(tipMutation.mutateAsync)
 
   const [amount, setAmount] = useState<number>(DEFAULT_RECOMMENDED_TIP)
 
@@ -182,7 +184,7 @@ const TipModalContent_: FC<{
           isLoading={tipMutation.isPending}
           onClick={() => {
             if (tipMutation.isPending) return
-            tipMutation.mutate({
+            present({
               entryId,
               amount: amountBigInt.toString() as "1000000000000000000" | "2000000000000000000",
             })

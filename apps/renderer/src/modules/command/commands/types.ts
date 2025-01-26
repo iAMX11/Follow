@@ -7,16 +7,12 @@ import type { COMMAND_ID } from "./id"
 
 export type TipCommand = Command<{
   id: typeof COMMAND_ID.entry.tip
-  fn: (data: { userId?: string; feedId?: string; entryId?: string }) => void
+  fn: (data: { userId?: string | null; feedId?: string; entryId?: string }) => void
 }>
 
 export type StarCommand = Command<{
   id: typeof COMMAND_ID.entry.star
   fn: (data: { entryId: string; view?: FeedViewType }) => void
-}>
-export type UnStarCommand = Command<{
-  id: typeof COMMAND_ID.entry.unstar
-  fn: (data: { entryId: string }) => void
 }>
 
 export type DeleteCommand = Command<{
@@ -43,10 +39,6 @@ export type ViewSourceContentCommand = Command<{
   id: typeof COMMAND_ID.entry.viewSourceContent
   fn: (data: { entryId: string }) => void
 }>
-export type ViewEntryContentCommand = Command<{
-  id: typeof COMMAND_ID.entry.viewEntryContent
-  fn: () => void
-}>
 
 export type ShareCommand = Command<{
   id: typeof COMMAND_ID.entry.share
@@ -55,11 +47,6 @@ export type ShareCommand = Command<{
 
 export type ReadCommand = Command<{
   id: typeof COMMAND_ID.entry.read
-  fn: ({ entryId }) => void
-}>
-
-export type UnReadCommand = Command<{
-  id: typeof COMMAND_ID.entry.unread
   fn: ({ entryId }) => void
 }>
 
@@ -76,18 +63,24 @@ export type ToggleAITranslationCommand = Command<{
 export type EntryCommand =
   | TipCommand
   | StarCommand
-  | UnStarCommand
   | DeleteCommand
   | CopyLinkCommand
   | CopyTitleCommand
   | OpenInBrowserCommand
   | ViewSourceContentCommand
-  | ViewEntryContentCommand
   | ShareCommand
   | ReadCommand
-  | UnReadCommand
   | ToggleAISummaryCommand
   | ToggleAITranslationCommand
+
+// Settings commands
+
+export type CustomizeToolbarCommand = Command<{
+  id: typeof COMMAND_ID.settings.customizeToolbar
+  fn: () => void
+}>
+
+export type SettingsCommand = CustomizeToolbarCommand
 
 // Integration commands
 
@@ -129,4 +122,4 @@ export type IntegrationCommand =
   | SaveToOutlineCommand
   | SaveToReadeckCommand
 
-export type BasicCommand = EntryCommand | IntegrationCommand
+export type BasicCommand = EntryCommand | SettingsCommand | IntegrationCommand

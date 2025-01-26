@@ -1,4 +1,4 @@
-import { getSession } from "@follow/shared/auth"
+import { getAccountInfo, getSession } from "@follow/shared/auth"
 import type { AuthSession } from "@follow/shared/hono"
 import type { FetchError } from "ofetch"
 
@@ -7,6 +7,27 @@ import { defineQuery } from "~/lib/defineQuery"
 
 export const auth = {
   getSession: () => defineQuery(["auth", "session"], () => getSession()),
+  getAccounts: () => defineQuery(["auth", "accounts"], () => getAccountInfo()),
+}
+
+export const useAccounts = () => {
+  return useAuthQuery(auth.getAccounts())
+}
+
+export const useSocialAccounts = () => {
+  const accounts = useAccounts()
+  return {
+    ...accounts,
+    data: accounts.data?.data?.filter((account) => account.provider !== "credential"),
+  }
+}
+
+export const useHasPassword = () => {
+  const accounts = useAccounts()
+  return {
+    ...accounts,
+    data: !!accounts.data?.data?.find((account) => account.provider === "credential"),
+  }
 }
 
 export const useSession = (options?: { enabled?: boolean }) => {
@@ -39,6 +60,8 @@ export const useSession = (options?: { enabled?: boolean }) => {
         ? "authenticated"
         : fetchError
           ? "error"
-          : "unauthenticated",
+          : data?.data === null
+            ? "unauthenticated"
+            : "unknown",
   }
 }

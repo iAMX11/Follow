@@ -187,7 +187,7 @@ const VirtualGridImpl: FC<
     horizontal: true,
     count: columns.length,
     getScrollElement: () => scrollRef,
-    estimateSize: (i) => columns[i],
+    estimateSize: (i) => columns[i]!,
     overscan: 5,
     initialOffset: offsetCache.get(columnCacheKey) ?? 0,
     initialMeasurementsCache: measurementsCache.get(columnCacheKey) ?? [],
@@ -205,7 +205,7 @@ const VirtualGridImpl: FC<
   const rowVirtualizer = useVirtualizer({
     count: rows.length + 1,
     estimateSize: () => {
-      return columns[0] / ratioMap[view] + 58
+      return columns[0]! / ratioMap[view] + 58
     },
     overscan: 5,
     gap: 8,
@@ -271,7 +271,7 @@ const VirtualGridImpl: FC<
 
   return (
     <div
-      className="relative mx-4 w-full"
+      className="relative mx-4"
       style={{
         height: `${rowVirtualizer.getTotalSize()}px`,
       }}
@@ -298,18 +298,18 @@ const VirtualGridImpl: FC<
             {columnVirtualizer.getVirtualItems().map((virtualColumn) => (
               <div
                 ref={columnVirtualizer.measureElement}
-                key={virtualColumn.index}
+                key={virtualColumn.key}
+                data-index={virtualColumn.index}
                 className="absolute left-0 top-0"
                 style={{
                   height: `${virtualRow.size}px`,
                   width: `${virtualColumn.size}px`,
-
                   transform: `translateX(${virtualColumn.start}px) translateY(${virtualRow.start}px)`,
                 }}
               >
                 {ready && (
                   <EntryItem
-                    entryId={entriesIds[virtualRow.index * columns.length + virtualColumn.index]}
+                    entryId={entriesIds[virtualRow.index * columns.length + virtualColumn.index]!}
                     view={view}
                   />
                 )}

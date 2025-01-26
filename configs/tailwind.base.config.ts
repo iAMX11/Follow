@@ -7,7 +7,7 @@ import { cleanupSVG, importDirectorySync, isEmptyColor, parseColors, runSVGO } f
 import { compareColors, stringToColor } from "@iconify/utils/lib/colors"
 import type { Config } from "tailwindcss"
 
-export const baseConfig = {
+export const baseTwConfig = {
   darkMode: ["class", '[data-theme="dark"]'],
   content: [],
   prefix: "",
@@ -119,7 +119,7 @@ export const baseConfig = {
         sm: "calc(var(--radius) - 4px)",
       },
 
-      typography: (theme) => ({
+      typography: (theme: any) => ({
         zinc: {
           css: {
             "--tw-prose-body": theme("colors.zinc.500"),
@@ -127,6 +127,16 @@ export const baseConfig = {
           },
         },
       }),
+
+      keyframes: {
+        "caret-blink": {
+          "0%,70%,100%": { opacity: "1" },
+          "20%,50%": { opacity: "0" },
+        },
+      },
+      animation: {
+        "caret-blink": "caret-blink 1.25s ease-out infinite",
+      },
     },
   },
 

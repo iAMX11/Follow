@@ -1,32 +1,40 @@
-import { ActionButton, MotionButtonBase } from "@follow/components/ui/button/index.js"
+import { MotionButtonBase } from "@follow/components/ui/button/index.js"
 import { RootPortal } from "@follow/components/ui/portal/index.js"
 import { findElementInShadowDOM } from "@follow/utils/dom"
 import { clsx, cn } from "@follow/utils/utils"
 import { DismissableLayer } from "@radix-ui/react-dismissable-layer"
 import { AnimatePresence, m } from "framer-motion"
-import { memo, useEffect, useState } from "react"
+import { memo, useEffect, useMemo, useState } from "react"
 import { RemoveScroll } from "react-remove-scroll"
 import { useEventCallback } from "usehooks-ts"
 
 import { useUISettingKey } from "~/atoms/settings/ui"
 import { HeaderTopReturnBackButton } from "~/components/mobile/button"
+import { CommandActionButton } from "~/components/ui/button/CommandActionButton"
 import { useScrollTracking, useTocItems } from "~/components/ui/markdown/components/hooks"
 import { ENTRY_CONTENT_RENDER_CONTAINER_ID } from "~/constants/dom"
 import type { EntryActionItem } from "~/hooks/biz/useEntryActions"
-import { useEntryActions } from "~/hooks/biz/useEntryActions"
+import { useSortedEntryActions } from "~/hooks/biz/useEntryActions"
 import { useEntry } from "~/store/entry/hooks"
 
 import { COMMAND_ID } from "../command/commands/id"
+import { useCommand } from "../command/hooks/use-command"
+import type { FollowCommandId } from "../command/types"
 import { useEntryContentScrollToTop, useEntryTitleMeta } from "./atoms"
 import type { EntryHeaderProps } from "./header.shared"
 
 function EntryHeaderImpl({ view, entryId, className }: EntryHeaderProps) {
   const entry = useEntry(entryId)
-  const actionConfigs = useEntryActions({ entryId, view }).filter(
-    (item) =>
-      !(
-        [COMMAND_ID.entry.read, COMMAND_ID.entry.unread, COMMAND_ID.entry.copyLink] as string[]
-      ).includes(item.id),
+  const sortedActionConfigs = useSortedEntryActions({ entryId, view })
+  const actionConfigs = useMemo(
+    () =>
+      [...sortedActionConfigs.mainAction, ...sortedActionConfigs.moreAction].filter(
+        (item) =>
+          !([COMMAND_ID.entry.copyLink, COMMAND_ID.settings.customizeToolbar] as string[]).includes(
+            item.id,
+          ),
+      ),
+    [sortedActionConfigs.mainAction, sortedActionConfigs.moreAction],
   )
 
   const entryTitleMeta = useEntryTitleMeta()
@@ -87,13 +95,12 @@ function EntryHeaderImpl({ view, entryId, className }: EntryHeaderProps) {
           )}
         >
           {actionConfigs.map((item) => (
-            <ActionButton
-              icon={item.icon}
+            <CommandActionButton
+              key={item.id}
+              commandId={item.id}
+              onClick={item.onClick}
               active={item.active}
               shortcut={item.shortcut}
-              onClick={item.onClick}
-              tooltip={item.name}
-              key={item.name}
             />
           ))}
         </div>
@@ -177,18 +184,15 @@ const HeaderRightActions = ({
                 >
                   <div className="flex flex-col items-center py-2">
                     {actions.map((item) => (
-                      <MotionButtonBase
+                      <CommandMotionButton
+                        key={item.id}
+                        commandId={item.id}
+                        active={item.active}
                         onClick={() => {
                           setCtxOpen(false)
                           item.onClick?.()
                         }}
-                        key={item.name}
-                        layout={false}
-                        className="flex w-full items-center gap-2 px-4 py-2"
-                      >
-                        {item.icon}
-                        {item.name}
-                      </MotionButtonBase>
+                      />
                     ))}
                   </div>
                 </m.div>
@@ -200,6 +204,30 @@ const HeaderRightActions = ({
     </div>
   )
 }
+
+const CommandMotionButton = ({
+  commandId,
+  onClick,
+  active,
+}: {
+  commandId: FollowCommandId
+  onClick: () => void
+  active?: boolean
+}) => {
+  const command = useCommand(commandId)
+  if (!command) return null
+  return (
+    <MotionButtonBase
+      onClick={onClick}
+      layout={false}
+      className="flex w-full items-center gap-2 px-4 py-2"
+    >
+      {typeof command.icon === "function" ? command.icon({ isActive: active }) : command.icon}
+      {command.label.title}
+    </MotionButtonBase>
+  )
+}
+
 const TableOfContentsIcon = ({ className = "size-6" }) => {
   return (
     <svg

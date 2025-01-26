@@ -63,7 +63,7 @@ export const ListCreationModalContent = ({ id }: { id?: string }) => {
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      view: list?.view.toString() || views[0].view.toString(),
+      view: list?.view.toString() || views[0]?.view.toString(),
       fee: list?.fee || 0,
       title: list?.title || "",
       description: list?.description || "",
@@ -96,7 +96,8 @@ export const ListCreationModalContent = ({ id }: { id?: string }) => {
       dismiss()
 
       if (!list) return
-      if (id) subscriptionActions.changeListView(id, views[list.view].view, views[values.view].view)
+      if (id)
+        subscriptionActions.changeListView(id, views[list.view]!.view, views[values.view].view)
     },
     onError: createErrorToaster(id ? t("lists.edit.error") : t("lists.created.error")),
   })
@@ -189,6 +190,8 @@ export const ListCreationModalContent = ({ id }: { id?: string }) => {
                   <Input
                     {...field}
                     type="number"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     min={0}
                     onChange={(value) => field.onChange(value.target.valueAsNumber)}
                   />
@@ -214,9 +217,11 @@ export const ListFeedsModalContent = ({ id }: { id: string }) => {
   const { t } = useTranslation("settings")
 
   const [feedSearchFor, setFeedSearchFor] = useState("")
+  const selectedFeedIdRef = useRef<string | null>()
   const addMutation = useAddFeedToFeedList({
     onSuccess: () => {
       setFeedSearchFor("")
+      selectedFeedIdRef.current = null
     },
   })
 
@@ -230,7 +235,6 @@ export const ListFeedsModalContent = ({ id }: { id: string }) => {
       }))
   }, [allFeeds, list?.feedIds])
 
-  const selectedFeedIdRef = useRef<string | null>()
   if (!list) return null
   return (
     <>

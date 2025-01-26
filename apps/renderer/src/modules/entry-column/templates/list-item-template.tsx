@@ -30,6 +30,7 @@ export function ListItem({
   withDetails?: boolean
   withAudio?: boolean
 }) {
+  const isMobile = useMobile()
   const entry = useEntry(entryId) || entryPreview
 
   const asRead = useAsRead(entry)
@@ -58,12 +59,10 @@ export function ListItem({
   const lineClamp = useMemo(() => {
     const envIsSafari = isSafari()
     let lineClampTitle = settingWideMode ? 1 : 2
-    let lineClampDescription = settingWideMode ? 1 : 2
+    const lineClampDescription = settingWideMode ? 1 : 2
+
     if (translation?.title) {
-      lineClampTitle += settingWideMode ? 1 : 2
-    }
-    if (translation?.description) {
-      lineClampDescription += settingWideMode ? 1 : 2
+      lineClampTitle += 1
     }
 
     // for tailwind
@@ -75,7 +74,7 @@ export function ListItem({
       title: envIsSafari ? `line-clamp-[${lineClampTitle}]` : "",
       description: envIsSafari ? `line-clamp-[${lineClampDescription}]` : "",
     }
-  }, [translation?.title, translation?.description, settingWideMode])
+  }, [settingWideMode])
 
   // NOTE: prevent 0 height element, react virtuoso will not stop render any more
   if (!entry || !(feed || inbox)) return null
@@ -84,7 +83,26 @@ export function ListItem({
 
   const related = feed || inbox
 
-  const hasAudio = entry.entries?.attachments?.[0].url
+  const hasAudio = entry.entries?.attachments?.[0]!.url
+  const hasMedia = entry.entries?.media?.[0]?.url
+
+  const marginWidth = 8 * (isMobile ? 1.125 : 1)
+  // calculate the max width to have a correct truncation
+  // FIXME: this is not easy to maintain, need to refactor
+  const feedIconWidth = 20 + marginWidth
+  const audioCoverWidth = settingWideMode ? 65 : 80 + marginWidth
+  const mediaWidth = (settingWideMode ? 48 : 80) * (isMobile ? 1.125 : 1) + marginWidth
+
+  let savedWidth = 0
+  if (!withAudio) {
+    savedWidth += feedIconWidth
+  }
+  if (withAudio && hasAudio) {
+    savedWidth += audioCoverWidth
+  }
+  if (withDetails && hasMedia) {
+    savedWidth += mediaWidth
+  }
 
   return (
     <div
@@ -97,11 +115,10 @@ export function ListItem({
     >
       {!withAudio && <FeedIcon feed={related} fallback entry={entry.entries} />}
       <div
-        className={cn(
-          "-mt-0.5 flex-1 text-sm leading-tight",
-          lineClamp.global,
-          withAudio && !!hasAudio && "max-w-[calc(100%-88px)]",
-        )}
+        className={cn("-mt-0.5 flex-1 text-sm leading-tight", lineClamp.global)}
+        style={{
+          maxWidth: `calc(100% - ${savedWidth}px)`,
+        }}
       >
         <div
           className={cn(
@@ -163,9 +180,9 @@ export function ListItem({
       {withAudio && !!hasAudio && (
         <AudioCover
           entryId={entryId}
-          src={entry.entries!.attachments![0].url}
+          src={entry.entries!.attachments![0]!.url}
           durationInSeconds={Number.parseInt(
-            String(entry.entries!.attachments![0].duration_in_seconds ?? 0),
+            String(entry.entries!.attachments![0]!.duration_in_seconds ?? 0),
             10,
           )}
           feedIcon={
@@ -278,7 +295,7 @@ function AudioCover({
       </div>
 
       {!!estimatedMins && (
-        <div className="absolute bottom-0 w-full overflow-hidden rounded-b-sm text-center ">
+        <div className="absolute bottom-0 w-full overflow-hidden rounded-b-sm text-center">
           <div
             className={cn(
               "absolute left-0 top-0 size-full bg-white/50 opacity-0 duration-200 group-hover:opacity-100 dark:bg-neutral-900/70",

@@ -2,6 +2,7 @@ import { isMobile } from "@follow/components/hooks/useMobile.js"
 import { Skeleton } from "@follow/components/ui/skeleton/index.jsx"
 import { IN_ELECTRON } from "@follow/shared/constants"
 import { stopPropagation } from "@follow/utils/dom"
+import { transformVideoUrl } from "@follow/utils/url-for-video"
 import { cn } from "@follow/utils/utils"
 import { useHover } from "@use-gesture/react"
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -16,7 +17,6 @@ import { FixedModalCloseButton } from "~/components/ui/modal/components/close"
 import { PlainModal } from "~/components/ui/modal/stacked/custom-modal"
 import { useModalStack } from "~/components/ui/modal/stacked/hooks"
 import { useRouteParamsSelector } from "~/hooks/biz/useRouteParams"
-import { urlToIframe } from "~/lib/url-to-iframe"
 import { FeedIcon } from "~/modules/feed/feed-icon"
 import { FeedTitle } from "~/modules/feed/feed-title"
 import { useEntry } from "~/store/entry/hooks"
@@ -32,7 +32,19 @@ export function VideoItem({ entryId, entryPreview, translation }: UniversalItemP
   const isActive = useRouteParamsSelector(({ entryId }) => entryId === entry?.entries.id)
 
   const [miniIframeSrc, iframeSrc] = useMemo(
-    () => [urlToIframe(entry?.entries.url, true), urlToIframe(entry?.entries.url)],
+    () => [
+      transformVideoUrl({
+        url: entry?.entries.url ?? "",
+        mini: true,
+        isIframe: !IN_ELECTRON,
+        attachments: entry?.entries.attachments,
+      }),
+      transformVideoUrl({
+        url: entry?.entries.url ?? "",
+        isIframe: !IN_ELECTRON,
+        attachments: entry?.entries.attachments,
+      }),
+    ],
     [entry?.entries.url],
   )
   const modalStack = useModalStack()
@@ -101,10 +113,10 @@ export function VideoItem({ entryId, entryPreview, translation }: UniversalItemP
             />
           ) : entry.entries.media ? (
             <Media
-              key={entry.entries.media?.[0].url}
-              src={entry.entries.media?.[0].url}
-              type={entry.entries.media?.[0].type}
-              previewImageUrl={entry.entries.media?.[0].preview_image_url}
+              key={entry.entries.media?.[0]!.url}
+              src={entry.entries.media?.[0]!.url}
+              type={entry.entries.media?.[0]!.type}
+              previewImageUrl={entry.entries.media?.[0]!.preview_image_url}
               className={cn(
                 "aspect-video w-full shrink-0 rounded-md object-cover",
                 isActive && "rounded-b-none",
@@ -218,13 +230,13 @@ export const VideoItemSkeleton = (
         </div>
         <div className="relative flex-1 px-2 pb-3 pt-1 text-sm">
           <div className="relative mb-1 mt-1.5 truncate font-medium leading-none">
-            <Skeleton className="h-4 w-3/4 " />
+            <Skeleton className="h-4 w-3/4" />
           </div>
           <div className="mt-1 flex items-center gap-1 truncate text-[13px]">
             <Skeleton className="mr-0.5 size-4" />
-            <Skeleton className="h-3 w-1/2 " />
+            <Skeleton className="h-3 w-1/2" />
             <span className="text-zinc-500">·</span>
-            <Skeleton className="h-3 w-12 " />
+            <Skeleton className="h-3 w-12" />
           </div>
         </div>
       </div>

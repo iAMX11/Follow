@@ -15,6 +15,7 @@ import { useNavigateEntry } from "~/hooks/biz/useNavigateEntry"
 import { useRouteParamsSelector } from "~/hooks/biz/useRouteParams"
 import { useContextMenu } from "~/hooks/common/useContextMenu"
 import { COMMAND_ID } from "~/modules/command/commands/id"
+import { getCommand } from "~/modules/command/hooks/use-command"
 import type { FlatEntryModel } from "~/store/entry"
 import { entryActions } from "~/store/entry"
 
@@ -103,15 +104,22 @@ export const EntryItemWrapper: FC<
                     COMMAND_ID.entry.viewSourceContent,
                     COMMAND_ID.entry.toggleAISummary,
                     COMMAND_ID.entry.toggleAITranslation,
+                    COMMAND_ID.settings.customizeToolbar,
                   ] as string[]
                 ).includes(item.id),
             )
-            .map((item) => ({
-              type: "text" as const,
-              label: item.name,
-              click: () => item.onClick(),
-              shortcut: item.shortcut,
-            })),
+            .map((item) => {
+              const cmd = getCommand(item.id)
+
+              if (!cmd) return null
+
+              return {
+                type: "text" as const,
+                label: cmd?.label.title || "",
+                click: () => item.onClick(),
+                shortcut: item.shortcut,
+              }
+            }),
           {
             type: "separator" as const,
           },

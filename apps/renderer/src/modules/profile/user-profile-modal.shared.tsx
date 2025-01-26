@@ -57,7 +57,7 @@ export const SubscriptionItems = ({
             <SubscriptionGroup
               key={category}
               category={category}
-              subscriptions={subscriptions.data?.[category]}
+              subscriptions={subscriptions.data?.[category]!}
               itemStyle={itemStyle}
             />
           ))}
@@ -133,7 +133,6 @@ const SubscriptionItem: FC<{
       isList: false,
       defaultValues: {
         view: defaultView.toString(),
-        category: subscription.category,
       },
     })
   })

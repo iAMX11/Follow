@@ -1,12 +1,14 @@
 // @ts-check
-import { defineConfig, GLOB_TS_SRC } from "eslint-config-hyoban"
+import path from "node:path"
+
+import { fixupPluginRules } from "@eslint/compat"
+import { defineConfig } from "eslint-config-hyoban"
+import reactNative from "eslint-plugin-react-native"
 
 import checkI18nJson from "./plugins/eslint/eslint-check-i18n-json.js"
 import noDebug from "./plugins/eslint/eslint-no-debug.js"
 import packageJsonExtend from "./plugins/eslint/eslint-package-json.js"
 import recursiveSort from "./plugins/eslint/eslint-recursive-sort.js"
-
-const isCI = process.env.CI === "true" || process.env.CI === "1"
 
 export default defineConfig(
   {
@@ -17,24 +19,13 @@ export default defineConfig(
       "src/hono.ts",
       "packages/shared/src/hono.ts",
       "resources/**",
+      "apps/mobile/android/**",
+      "apps/mobile/ios/**",
+      "apps/mobile/.expo",
     ],
     preferESM: false,
-    projectService: isCI
-      ? {
-          allowDefaultProject: ["apps/main/preload/index.d.ts"],
-          defaultProject: "tsconfig.json",
-        }
-      : undefined,
-    typeChecked: isCI ? "essential" : false,
-  },
-  isCI && {
-    files: GLOB_TS_SRC,
-    rules: {
-      "require-await": "off",
-      "@typescript-eslint/require-await": "warn",
-      "@typescript-eslint/await-thenable": "warn",
-      "@typescript-eslint/no-floating-promises": "off",
-      "@typescript-eslint/no-misused-promises": "off",
+    tailwindCSS: {
+      order: false,
     },
   },
   {
@@ -65,6 +56,22 @@ export default defineConfig(
     },
   },
   {
+    files: ["apps/server/**/*"],
+    settings: {
+      tailwindcss: {
+        config: path.join(import.meta.dirname, "apps/server/tailwind.config.ts"),
+      },
+    },
+  },
+  {
+    files: ["apps/mobile/**/*"],
+    settings: {
+      tailwindcss: {
+        config: path.join(import.meta.dirname, "apps/mobile/tailwind.config.ts"),
+      },
+    },
+  },
+  {
     files: ["**/*.tsx"],
     rules: {
       "@stylistic/jsx-self-closing-comp": "error",
@@ -91,6 +98,16 @@ export default defineConfig(
     rules: {
       "package-json-extend/ensure-package-version": "error",
       "package-json-extend/no-duplicate-package": "error",
+    },
+  },
+  {
+    plugins: {
+      // @ts-expect-error
+      "react-native": fixupPluginRules(reactNative),
+    },
+    files: ["apps/mobile/**/*"],
+    rules: {
+      "react-native/no-inline-styles": "warn",
     },
   },
 )

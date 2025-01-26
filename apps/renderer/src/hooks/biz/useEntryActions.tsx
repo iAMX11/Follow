@@ -1,6 +1,6 @@
 import { isMobile } from "@follow/components/hooks/useMobile.js"
-import { FeedViewType } from "@follow/constants"
-import type { ReactNode } from "react"
+import { FeedViewType, UserRole } from "@follow/constants"
+import { IN_ELECTRON } from "@follow/shared/constants"
 import { useCallback, useMemo } from "react"
 
 import { useShowAISummary } from "~/atoms/ai-summary"
@@ -12,12 +12,13 @@ import {
   setReadabilityStatus,
 } from "~/atoms/readability"
 import { useShowSourceContent } from "~/atoms/source-content"
-import { whoami } from "~/atoms/user"
+import { useUserRole, whoami } from "~/atoms/user"
 import { shortcuts } from "~/constants/shortcuts"
 import { tipcClient } from "~/lib/client"
 import { COMMAND_ID } from "~/modules/command/commands/id"
-import { useGetCommand, useRunCommandFn } from "~/modules/command/hooks/use-command"
+import { useRunCommandFn } from "~/modules/command/hooks/use-command"
 import type { FollowCommandId } from "~/modules/command/types"
+import { useToolbarOrderMap } from "~/modules/customize-toolbar/hooks"
 import { useEntry } from "~/store/entry"
 import { useFeedById } from "~/store/feed"
 import { useInboxById } from "~/store/inbox"
@@ -62,11 +63,11 @@ export const useEntryReadabilityToggle = ({ id, url }: { id: string; url: string
 
 export type EntryActionItem = {
   id: FollowCommandId
-  name: string
-  icon?: ReactNode
-  active?: boolean
-  shortcut?: string
   onClick: () => void
+  hide?: boolean
+  shortcut?: string
+  active?: boolean
+  disabled?: boolean
 }
 
 export const useEntryActions = ({ entryId, view }: { entryId: string; view?: FeedViewType }) => {
@@ -87,10 +88,13 @@ export const useEntryActions = ({ entryId, view }: { entryId: string; view?: Fee
   const isShowAISummary = useShowAISummary()
   const isShowAITranslation = useShowAITranslation()
 
-  const getCmd = useGetCommand()
   const runCmdFn = useRunCommandFn()
-  const actionConfigs = useMemo(() => {
-    if (!entryId) return []
+  const hasEntry = !!entry
+
+  const userRole = useUserRole()
+
+  const actionConfigs: EntryActionItem[] = useMemo(() => {
+    if (!hasEntry) return []
     return [
       {
         id: COMMAND_ID.integration.saveToEagle,
@@ -118,20 +122,16 @@ export const useEntryActions = ({ entryId, view }: { entryId: string; view?: Fee
       },
       {
         id: COMMAND_ID.entry.tip,
-        onClick: runCmdFn(COMMAND_ID.entry.tip, [{ entryId, feedId: feed?.id }]),
+        onClick: runCmdFn(COMMAND_ID.entry.tip, [
+          { entryId, feedId: feed?.id, userId: feed?.ownerUserId },
+        ]),
         hide: isInbox || feed?.ownerUserId === whoami()?.id,
         shortcut: shortcuts.entry.tip.key,
       },
       {
-        id: COMMAND_ID.entry.unstar,
-        onClick: runCmdFn(COMMAND_ID.entry.unstar, [{ entryId }]),
-        hide: !entry?.collections,
-        shortcut: shortcuts.entry.toggleStarred.key,
-      },
-      {
         id: COMMAND_ID.entry.star,
         onClick: runCmdFn(COMMAND_ID.entry.star, [{ entryId, view }]),
-        hide: !!entry?.collections,
+        active: !!entry?.collections,
         shortcut: shortcuts.entry.toggleStarred.key,
       },
       {
@@ -153,13 +153,8 @@ export const useEntryActions = ({ entryId, view }: { entryId: string; view?: Fee
       {
         id: COMMAND_ID.entry.viewSourceContent,
         onClick: runCmdFn(COMMAND_ID.entry.viewSourceContent, [{ entryId }]),
-        hide: isMobile() || isShowSourceContent || !entry?.entries.url,
-      },
-      {
-        id: COMMAND_ID.entry.viewEntryContent,
-        onClick: runCmdFn(COMMAND_ID.entry.viewEntryContent, []),
-        hide: !isShowSourceContent,
-        active: true,
+        hide: isMobile() || !entry?.entries.url,
+        active: isShowSourceContent,
       },
       {
         id: COMMAND_ID.entry.toggleAISummary,
@@ -170,6 +165,7 @@ export const useEntryActions = ({ entryId, view }: { entryId: string; view?: Fee
             entry?.view,
           ),
         active: isShowAISummary,
+        disabled: userRole === UserRole.Trial,
       },
       {
         id: COMMAND_ID.entry.toggleAITranslation,
@@ -180,51 +176,95 @@ export const useEntryActions = ({ entryId, view }: { entryId: string; view?: Fee
             entry?.view,
           ),
         active: isShowAITranslation,
+        disabled: userRole === UserRole.Trial,
       },
       {
         id: COMMAND_ID.entry.share,
         onClick: runCmdFn(COMMAND_ID.entry.share, [{ entryId }]),
-        hide: !entry?.entries.url || !("share" in navigator),
+        hide: !entry?.entries.url || !("share" in navigator || IN_ELECTRON),
         shortcut: shortcuts.entry.share.key,
       },
       {
         id: COMMAND_ID.entry.read,
         onClick: runCmdFn(COMMAND_ID.entry.read, [{ entryId }]),
-        hide: !entry || !!entry.read || !!entry.collections || !!inList,
+        hide: !hasEntry || !!entry.collections || !!inList,
+        active: !!entry?.read,
         shortcut: shortcuts.entry.toggleRead.key,
       },
       {
-        id: COMMAND_ID.entry.unread,
-        onClick: runCmdFn(COMMAND_ID.entry.unread, [{ entryId }]),
-        hide: !entry || !entry.read || !!entry.collections || !!inList,
-        shortcut: shortcuts.entry.toggleRead.key,
+        id: COMMAND_ID.settings.customizeToolbar,
+        onClick: runCmdFn(COMMAND_ID.settings.customizeToolbar, []),
       },
-    ]
-      .filter((config) => !config.hide)
-      .map((config) => {
-        const cmd = getCmd(config.id)
-        if (!cmd) return null
-        return {
-          ...config,
-          name: cmd.label.title,
-          icon: cmd.icon,
-        }
-      })
-      .filter((i) => i !== null)
+    ].filter((config) => !config.hide)
   }, [
-    entry,
+    entry?.collections,
+    entry?.entries.url,
+    entry?.read,
+    entry?.settings?.summary,
+    entry?.settings?.translation,
+    entry?.view,
     entryId,
     feed?.id,
     feed?.ownerUserId,
-    getCmd,
+    hasEntry,
     inList,
     isInbox,
     isShowAISummary,
     isShowAITranslation,
     isShowSourceContent,
     runCmdFn,
+    userRole,
     view,
   ])
 
   return actionConfigs
+}
+
+export const useSortedEntryActions = ({
+  entryId,
+  view,
+}: {
+  entryId: string
+  view?: FeedViewType
+}) => {
+  const entryActions = useEntryActions({ entryId, view })
+  const orderMap = useToolbarOrderMap()
+  const mainAction = useMemo(
+    () =>
+      entryActions
+        .filter((item) => {
+          const order = orderMap.get(item.id)
+          if (!order) return false
+          return order.type === "main"
+        })
+        .sort((a, b) => {
+          const orderA = orderMap.get(a.id)?.order || 0
+          const orderB = orderMap.get(b.id)?.order || 0
+          return orderA - orderB
+        }),
+    [entryActions, orderMap],
+  )
+
+  const moreAction = useMemo(
+    () =>
+      entryActions
+        .filter((item) => {
+          const order = orderMap.get(item.id)
+          // If the order is not set, it should be in the "more" menu
+          if (!order) return true
+          return order.type !== "main"
+        })
+        // .filter((item) => item.id !== COMMAND_ID.settings.customizeToolbar)
+        .sort((a, b) => {
+          const orderA = orderMap.get(a.id)?.order || Infinity
+          const orderB = orderMap.get(b.id)?.order || Infinity
+          return orderA - orderB
+        }),
+    [entryActions, orderMap],
+  )
+
+  return {
+    mainAction,
+    moreAction,
+  }
 }

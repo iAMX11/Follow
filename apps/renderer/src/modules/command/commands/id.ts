@@ -2,16 +2,13 @@ export const COMMAND_ID = {
   entry: {
     tip: "entry:tip",
     star: "entry:star",
-    unstar: "entry:unstar",
     delete: "entry:delete",
     copyLink: "entry:copy-link",
     copyTitle: "entry:copy-title",
     openInBrowser: "entry:open-in-browser",
     viewSourceContent: "entry:view-source-content",
-    viewEntryContent: "entry:view-entry-content",
     share: "entry:share",
     read: "entry:read",
-    unread: "entry:unread",
     toggleAISummary: "entry:toggle-ai-summary",
     toggleAITranslation: "entry:toggle-ai-translation",
   },
@@ -31,9 +28,10 @@ export const COMMAND_ID = {
     copyUrl: "list:copy-url",
     copyId: "list:copy-id",
   },
-  theme: {
-    toAuto: "follow:change-color-mode-to-auto",
-    toDark: "follow:change-color-mode-to-dark",
-    toLight: "follow:change-color-mode-to-light",
+  settings: {
+    changeThemeToAuto: "follow:change-color-mode-to-auto",
+    changeThemeToDark: "follow:change-color-mode-to-dark",
+    changeThemeToLight: "follow:change-color-mode-to-light",
+    customizeToolbar: "follow:customize-toolbar",
   },
 } as const

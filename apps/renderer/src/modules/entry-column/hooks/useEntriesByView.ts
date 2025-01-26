@@ -54,6 +54,7 @@ export const useEntriesByView = ({
     {
       refetchInterval: 1000 * 60,
       enabled: !!fetchedTime && !pauseQuery,
+      notifyOnChangeProps: ["data"],
     },
   )
   const hasUpdate = useMemo(
@@ -136,7 +137,7 @@ export const useEntriesByView = ({
 
   const groupByDate = useGeneralSettingKey("groupByDate")
   const groupedCounts: number[] | undefined = useMemo(() => {
-    if (views[view].gridMode) {
+    if (views[view]!.gridMode) {
       return
     }
     if (!groupByDate) {
@@ -183,8 +184,11 @@ function sortEntriesIdByEntryPublishedAt(entries: string[]) {
   const entriesId2Map = entryActions.getFlattenMapEntries()
   return entries
     .slice()
-    .sort((a, b) =>
-      entriesId2Map[b]?.entries.publishedAt.localeCompare(entriesId2Map[a]?.entries.publishedAt),
+    .sort(
+      (a, b) =>
+        entriesId2Map[b]?.entries.publishedAt.localeCompare(
+          entriesId2Map[a]?.entries.publishedAt!,
+        ) || 0,
     )
 }
 
@@ -202,8 +206,10 @@ function sortEntriesIdByEntryInsertedAt(entries: string[]) {
   const entriesId2Map = entryActions.getFlattenMapEntries()
   return entries
     .slice()
-    .sort((a, b) =>
-      entriesId2Map[b]?.entries.insertedAt.localeCompare(entriesId2Map[a]?.entries.insertedAt),
+    .sort(
+      (a, b) =>
+        entriesId2Map[b]?.entries.insertedAt.localeCompare(entriesId2Map[a]?.entries.insertedAt!) ||
+        0,
     )
 }
 
@@ -216,7 +222,7 @@ const useFetchEntryContentByStream = (remoteEntryIds?: string[]) => {
       const nextIds = [] as string[]
       if (onlyNoStored) {
         for (const id of remoteEntryIds) {
-          const entry = getEntry(id)
+          const entry = getEntry(id)!
           if (entry.entries.content) {
             continue
           }
@@ -252,8 +258,8 @@ const useFetchEntryContentByStream = (remoteEntryIds?: string[]) => {
 
             // Process all complete lines
             for (let i = 0; i < lines.length - 1; i++) {
-              if (lines[i].trim()) {
-                const json = JSON.parse(lines[i])
+              if (lines[i]!.trim()) {
+                const json = JSON.parse(lines[i]!)
                 // Handle each JSON line here
                 entryActions.updateEntryContent(json.id, json.content)
               }

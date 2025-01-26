@@ -110,7 +110,7 @@ export const EntryList: FC<EntryListProps> = memo(
         groupCounts
           ? groupCounts.reduce(
               (acc, count, index) => {
-                acc[index + 1] = acc[index] + count
+                acc[index + 1] = acc[index]! + count
                 return acc
               },
               [0],
@@ -161,8 +161,8 @@ export const EntryList: FC<EntryListProps> = memo(
     })
 
     const activeStickyIndexRef = useRef(0)
-    const isActiveSticky = (index: number) => activeStickyIndexRef.current === index
-    const isSticky = (index: number) => stickyIndexes.includes(index)
+    const checkIsActiveSticky = (index: number) => activeStickyIndexRef.current === index
+    const checkIsStickyItem = (index: number) => stickyIndexes.includes(index)
 
     const virtualItems = rowVirtualizer.getVirtualItems()
     useEffect(() => {
@@ -233,6 +233,7 @@ export const EntryList: FC<EntryListProps> = memo(
                   ref={rowVirtualizer.measureElement}
                   className="absolute left-0 top-0 w-full will-change-transform"
                   key={virtualRow.key}
+                  data-index={virtualRow.index}
                   style={{
                     transform,
                   }}
@@ -241,20 +242,20 @@ export const EntryList: FC<EntryListProps> = memo(
                 </div>
               )
             }
-            const activeSticky = isActiveSticky(virtualRow.index)
-            const sticky = isSticky(virtualRow.index)
+            const isStickyItem = checkIsStickyItem(virtualRow.index)
+            const isActiveStickyItem = !isScrollTop && checkIsActiveSticky(virtualRow.index)
             return (
               <Fragment key={virtualRow.key}>
-                {sticky && (
+                {isStickyItem && (
                   <div
                     className={clsx(
                       "bg-background",
-                      activeSticky
+                      isActiveStickyItem
                         ? "sticky top-0 z-[1]"
-                        : "absolute left-0 top-0 z-[2] w-full will-change-transform",
+                        : "absolute left-0 top-0 w-full will-change-transform",
                     )}
                     style={
-                      !activeSticky
+                      !isActiveStickyItem
                         ? {
                             transform,
                           }
@@ -262,8 +263,8 @@ export const EntryList: FC<EntryListProps> = memo(
                     }
                   >
                     <EntryHeadDateItem
-                      entryId={entriesIds[virtualRow.index]}
-                      isSticky={!isScrollTop && activeSticky}
+                      entryId={entriesIds[virtualRow.index]!}
+                      isSticky={isActiveStickyItem}
                     />
                   </div>
                 )}
@@ -271,12 +272,12 @@ export const EntryList: FC<EntryListProps> = memo(
                   className="absolute left-0 top-0 w-full will-change-transform"
                   style={{
                     transform,
-                    paddingTop: sticky ? "1.75rem" : undefined,
+                    paddingTop: isStickyItem ? "1.75rem" : undefined,
                   }}
                   ref={rowVirtualizer.measureElement}
                   data-index={virtualRow.index}
                 >
-                  <EntryItem entryId={entriesIds[virtualRow.index]} view={view} />
+                  <EntryItem entryId={entriesIds[virtualRow.index]!} view={view} />
                 </div>
               </Fragment>
             )
