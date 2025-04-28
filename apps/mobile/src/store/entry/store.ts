@@ -12,6 +12,7 @@ import { collectionActions } from "../collection/store"
 import { feedActions } from "../feed/store"
 import { createImmerSetter, createTransaction, createZustandStore } from "../internal/helper"
 import { getSubscription } from "../subscription/getter"
+import { getDefaultCategory } from "../subscription/utils"
 import type { PublishAtTimeRangeFilter } from "../unread/types"
 import { getEntry } from "./getter"
 import type { EntryModel, FetchEntriesProps } from "./types"
@@ -93,13 +94,13 @@ class EntryActions {
   }) {
     if (!feedId) return
     const subscription = getSubscription(feedId)
-    if (subscription?.category) {
-      const entryIdSetByCategory = draft.entryIdByCategory[subscription.category]
-      if (!entryIdSetByCategory) {
-        draft.entryIdByCategory[subscription.category] = new Set([entryId])
-      } else {
-        entryIdSetByCategory.add(entryId)
-      }
+    const category = subscription?.category || getDefaultCategory(subscription)
+    if (!category) return
+    const entryIdSetByCategory = draft.entryIdByCategory[category]
+    if (!entryIdSetByCategory) {
+      draft.entryIdByCategory[category] = new Set([entryId])
+    } else {
+      entryIdSetByCategory.add(entryId)
     }
   }
 

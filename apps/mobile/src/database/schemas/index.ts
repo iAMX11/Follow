@@ -30,7 +30,7 @@ export const subscriptionsTable = sqliteTable("subscriptions", {
   inboxId: text("inbox_id"),
   userId: text("user_id").notNull(),
   view: integer("view").notNull().$type<FeedViewType>(),
-  isPrivate: integer("is_private").notNull(),
+  isPrivate: integer("is_private", { mode: "boolean" }).notNull(),
   title: text("title"),
   category: text("category"),
   createdAt: text("created_at"),

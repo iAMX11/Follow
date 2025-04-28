@@ -5,9 +5,10 @@ import { useTranslation } from "react-i18next"
 import { Alert, Clipboard } from "react-native"
 
 import { ContextMenu } from "@/src/components/ui/context-menu"
+import { useNavigation } from "@/src/lib/navigation/hooks"
 import { toast } from "@/src/lib/toast"
+import { FollowScreen } from "@/src/screens/(modal)/FollowScreen"
 import { getList } from "@/src/store/list/getters"
-import { useIsOwnList } from "@/src/store/list/hooks"
 import { subscriptionSyncService } from "@/src/store/subscription/store"
 
 export const SubscriptionListItemContextMenu: FC<
@@ -16,15 +17,18 @@ export const SubscriptionListItemContextMenu: FC<
   }
 > = ({ id, children }) => {
   const { t } = useTranslation()
-  const isOwnList = useIsOwnList(id)
+  const navigation = useNavigation()
   const actions = useMemo(
     () => [
-      isOwnList && {
+      {
         title: t("operation.edit"),
         onSelect: () => {
           const list = getList(id)
           if (!list) return
-          // TODO
+          navigation.presentControllerView(FollowScreen, {
+            type: "list",
+            id: list.id,
+          })
         },
       },
       {
@@ -56,7 +60,7 @@ export const SubscriptionListItemContextMenu: FC<
         },
       },
     ],
-    [id, isOwnList, t],
+    [id, navigation, t],
   )
 
   return (

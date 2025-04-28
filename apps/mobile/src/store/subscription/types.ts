@@ -3,9 +3,9 @@ import type { FeedViewType } from "@follow/constants"
 export interface SubscriptionForm {
   url?: string
   view: FeedViewType
-  category: string
+  category?: string
   isPrivate: boolean
-  title: string
+  title?: string | null
   feedId?: string
   listId?: string
 }

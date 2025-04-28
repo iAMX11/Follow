@@ -32,7 +32,7 @@ const formSchema = z.object({
   isPrivate: z.boolean().optional(),
   title: z.string().optional(),
 })
-const defaultValues = { view: FeedViewType.Articles }
+
 export function FollowFeed(props: { id: string }) {
   const { id } = props
   const feed = useFeed(id as string)
@@ -72,12 +72,18 @@ export function FollowUrl(props: { url: string }) {
 function FollowImpl(props: { feedId: string }) {
   const { feedId: id } = props
 
-  const feed = useFeed(id as string)!
-  const isSubscribed = useSubscriptionByFeedId(feed?.id || "")
+  const feed = useFeed(id)
+  const subscription = useSubscriptionByFeedId(feed?.id)
+  const isSubscribed = !!subscription
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
-    defaultValues,
+    defaultValues: {
+      category: subscription?.category ?? "",
+      isPrivate: subscription?.isPrivate ?? false,
+      title: subscription?.title ?? "",
+      view: subscription?.view ?? FeedViewType.Articles,
+    },
   })
 
   const [isLoading, setIsLoading] = useState(false)
@@ -89,17 +95,28 @@ function FollowImpl(props: { feedId: string }) {
     setIsLoading(true)
     const values = form.getValues()
     const body: SubscriptionForm = {
-      url: feed.url,
+      url: feed?.url,
       view: values.view,
       category: values.category ?? "",
       isPrivate: values.isPrivate ?? false,
       title: values.title ?? "",
-      feedId: feed.id,
+      feedId: feed?.id,
     }
 
-    await subscriptionSyncService.subscribe(body).finally(() => {
-      setIsLoading(false)
-    })
+    if (isSubscribed) {
+      await subscriptionSyncService
+        .edit({
+          ...subscription,
+          ...body,
+        })
+        .finally(() => {
+          setIsLoading(false)
+        })
+    } else {
+      await subscriptionSyncService.subscribe(body).finally(() => {
+        setIsLoading(false)
+      })
+    }
 
     if (canDismiss) {
       navigate.dismiss()

@@ -4,6 +4,7 @@ import { Text, View } from "react-native"
 import Animated, { FadeOutUp } from "react-native-reanimated"
 import { useColor } from "react-native-uikit-colors"
 
+import { OouiUserAnonymous } from "@/src/components/icons/OouiUserAnonymous"
 import { GROUPED_ICON_TEXT_GAP, GROUPED_LIST_MARGIN } from "@/src/components/ui/grouped/constants"
 import { FeedIcon } from "@/src/components/ui/icon/feed-icon"
 import { PlatformActivityIndicator } from "@/src/components/ui/loading/PlatformActivityIndicator"
@@ -26,6 +27,7 @@ import { UnreadCount } from "./UnreadCount"
 export const SubscriptionItem = memo(
   ({ id, isFirst, isLast, className }: SubscriptionItemBaseProps) => {
     const red = useColor("red")
+    const colorLabel = useColor("label")
     const subscription = useSubscription(id)
     const unreadCount = useUnreadCount(id)
     const feed = useFeed(id)!
@@ -79,12 +81,15 @@ export const SubscriptionItem = memo(
               <View className="flex-1 flex-row items-center gap-2">
                 <Text
                   numberOfLines={1}
-                  className={cn("text-text font-medium", feed.errorAt && "text-red")}
+                  className={cn("text-text shrink font-medium", feed.errorAt && "text-red")}
                   style={{ marginLeft: GROUPED_ICON_TEXT_GAP }}
                 >
                   {subscription?.title || feed.title}
                 </Text>
                 {!!feed.errorAt && <WifiOffCuteReIcon color={red} height={18} width={18} />}
+                {!!subscription?.isPrivate && (
+                  <OouiUserAnonymous color={colorLabel} height={18} width={18} />
+                )}
               </View>
               <UnreadCount unread={unreadCount} className="ml-auto" />
             </ItemPressable>

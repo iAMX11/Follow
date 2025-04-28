@@ -18,9 +18,8 @@ import { getInboxStoreId, getSubscriptionStoreId } from "./utils"
 type FeedId = string
 type ListId = string
 type InboxId = string
-export type SubscriptionModel = Omit<SubscriptionSchema, "id" | "isPrivate"> & {
-  isPrivate: boolean
-}
+export type SubscriptionModel = Omit<SubscriptionSchema, "id">
+
 interface SubscriptionState {
   /**
    * Key: feedId
@@ -240,6 +239,9 @@ class SubscriptionSyncService {
     subscriptionActions.upsertMany([
       {
         ...subscription,
+        title: subscription.title ?? null,
+        category: subscription.category ?? null,
+
         type: data.list ? "list" : "feed",
         createdAt: new Date().toISOString(),
         feedId: data.feed?.id ?? null,

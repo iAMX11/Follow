@@ -14,6 +14,7 @@ import { views } from "@/src/constants/views"
 import { useNavigation } from "@/src/lib/navigation/hooks"
 import type { Navigation } from "@/src/lib/navigation/Navigation"
 import { toast } from "@/src/lib/toast"
+import { FollowScreen } from "@/src/screens/(modal)/FollowScreen"
 import { FeedScreen } from "@/src/screens/(stack)/feeds/[feedId]/FeedScreen"
 import { useEntryIdsByFeedId, usePrefetchEntries } from "@/src/store/entry/hooks"
 import { getFeed } from "@/src/store/feed/getter"
@@ -170,7 +171,18 @@ const generateSubscriptionContextMenu = (navigation: Navigation, id: string) => 
         </ContextMenu.SubContent>
       </ContextMenu.Sub>
 
-      <ContextMenu.Item key="Edit">
+      <ContextMenu.Item
+        key="Edit"
+        onSelect={() => {
+          const subscription = getSubscription(id)
+          if (!subscription || !subscription.feedId) return
+
+          navigation.presentControllerView(FollowScreen, {
+            type: "feed",
+            id: subscription.feedId,
+          })
+        }}
+      >
         <ContextMenu.ItemTitle>{t("operation.edit")}</ContextMenu.ItemTitle>
         <ContextMenu.ItemIcon
           ios={{

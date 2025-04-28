@@ -14,7 +14,6 @@ class StoreDbMorph {
     return {
       ...subscription,
       id: buildSubscriptionDbId(subscription),
-      isPrivate: subscription.isPrivate ? 1 : 0,
     }
   }
   toEntrySchema(entry: EntryModel): EntrySchema {

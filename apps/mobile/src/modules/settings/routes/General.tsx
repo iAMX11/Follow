@@ -99,8 +99,7 @@ export const GeneralScreen: NavigationControllerView = () => {
 
   const translation = useGeneralSettingKey("translation")
   const summary = useGeneralSettingKey("summary")
-  // TODO: support autoGroup
-  // const autoGroup = useGeneralSettingKey("autoGroup")
+  const autoGroup = useGeneralSettingKey("autoGroup")
   const showUnreadOnLaunch = useGeneralSettingKey("unreadOnly")
   // const groupByDate = useGeneralSettingKey("groupByDate")
   const expandLongSocialMedia = useGeneralSettingKey("autoExpandLongSocialMedia")
@@ -147,7 +146,7 @@ export const GeneralScreen: NavigationControllerView = () => {
 
       {/* Subscriptions */}
 
-      {/* <GroupedInsetListSectionHeader label={t("general.subscriptions")} />
+      <GroupedInsetListSectionHeader label={t("general.subscriptions")} />
       <GroupedInsetListCard>
         <GroupedInsetListCell
           label={t("general.auto_group.label")}
@@ -161,7 +160,7 @@ export const GeneralScreen: NavigationControllerView = () => {
             }}
           />
         </GroupedInsetListCell>
-      </GroupedInsetListCard> */}
+      </GroupedInsetListCard>
 
       {/* Timeline */}
 

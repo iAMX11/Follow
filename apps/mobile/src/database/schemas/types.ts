@@ -14,7 +14,11 @@ import type {
   usersTable,
 } from "."
 
-export type SubscriptionSchema = typeof subscriptionsTable.$inferSelect
+type NullWithUndefined<T> = {
+  [K in keyof T]: null extends T[K] ? T[K] | undefined : T[K]
+}
+
+export type SubscriptionSchema = NullWithUndefined<typeof subscriptionsTable.$inferSelect>
 
 export type FeedSchema = typeof feedsTable.$inferSelect
 

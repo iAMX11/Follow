@@ -3,6 +3,7 @@ import type { FeedViewType } from "@follow/constants"
 import { getListFeedIds } from "../list/getters"
 import type { SubscriptionModel } from "./store"
 import { useSubscriptionStore } from "./store"
+import { getDefaultCategory } from "./utils"
 
 const get = useSubscriptionStore.getState
 export const getSubscription = (id?: string): SubscriptionModel | undefined => {
@@ -33,7 +34,10 @@ export const getSubscriptionByCategory = ({
 
   const ids = [] as string[]
   for (const id of Object.keys(state.data)) {
-    if (state.data[id]!.category === category && state.data[id]!.view === view) {
+    const subscriptionCategory = state.data[id]
+      ? state.data[id].category || getDefaultCategory(state.data[id])
+      : null
+    if (subscriptionCategory === category && state.data[id]!.view === view) {
       ids.push(id)
     }
   }
