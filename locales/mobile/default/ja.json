@@ -95,6 +95,7 @@
   "operation.toggle_unread_only.show_unread_only.success": "未読のエントリーを表示中",
   "operation.unfollow": "フォロー解除",
   "operation.unstar": "スター解除",
+  "player.stop": "再生を停止",
   "profile.title": "{{name}}のプロフィール",
   "profile.uncategorized_feeds": "未分類のフィード",
   "settings.sign_in_cta": "アカウントにサインイン",

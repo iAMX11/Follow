@@ -95,6 +95,7 @@
   "operation.toggle_unread_only.show_unread_only.success": "仅显示未读条目",
   "operation.unfollow": "取消订阅",
   "operation.unstar": "取消收藏",
+  "player.stop": "终止播放",
   "profile.title": "{{name}}的个人资料",
   "profile.uncategorized_feeds": "未分类的订阅源",
   "settings.sign_in_cta": "登录你的账户",
