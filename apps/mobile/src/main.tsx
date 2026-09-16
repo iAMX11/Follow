@@ -1,7 +1,12 @@
 import "./global.css"
 import "./polyfill"
 
-import { apiContext, authClientContext, queryClientContext } from "@follow/store/context"
+import {
+  apiContext,
+  authClientContext,
+  queryClientContext,
+  syncApiContext,
+} from "@follow/store/context"
 import { registerRootComponent } from "expo"
 import { Image } from "expo-image"
 import { LinearGradient } from "expo-linear-gradient"
@@ -14,7 +19,7 @@ import { BottomTabProvider } from "./components/layouts/tabbar/BottomTabProvider
 import { ReactNativeTab } from "./components/layouts/tabbar/ReactNativeTab"
 import { Lightbox } from "./components/ui/lightbox/Lightbox"
 import { initializeApp } from "./initialize"
-import { followApi } from "./lib/api-client"
+import { followApi, syncApi } from "./lib/api-client"
 import { authClient } from "./lib/auth"
 import { initializeI18n } from "./lib/i18n"
 import { TabRoot } from "./lib/navigation/bottom-tab/TabRoot"
@@ -36,6 +41,7 @@ global.ELECTRON = false
 authClientContext.provide(authClient)
 queryClientContext.provide(queryClient)
 apiContext.provide(followApi)
+syncApiContext.provide(syncApi)
 
 enableFreeze(true)
 ;[Image, LinearGradient].forEach((Component) => {

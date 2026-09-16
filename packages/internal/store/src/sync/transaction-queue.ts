@@ -59,6 +59,12 @@ export interface TransactionFailureEvent {
 
 export type TransactionFailureListener = (event: TransactionFailureEvent) => void
 
+export interface TransactionAcknowledgedEvent {
+  records: TransactionRecord[]
+}
+
+export type TransactionAcknowledgedListener = (event: TransactionAcknowledgedEvent) => void
+
 interface QueuedTransaction<P = unknown> extends TransactionRecord<P> {
   definition: TransactionKind<P, unknown>
   settled: Promise<void>
@@ -86,7 +92,10 @@ const noop = () => {}
 const createTransactionId = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 
-const isOnline = () => typeof navigator === "undefined" || navigator.onLine !== false
+export const isNavigatorOnline = () =>
+  typeof navigator === "undefined" || navigator.onLine !== false
+
+const isOnline = isNavigatorOnline
 
 export const classifyTransactionError = (error: unknown, attempts: number): ErrorDecision => {
   if (error instanceof FollowAPIError) {
@@ -121,6 +130,7 @@ class TransactionQueue {
   private overlayCache: { version: number; overlays: Map<string, unknown> } | null = null
   private idleWaiters: Array<() => void> = []
   private failureListeners = new Set<TransactionFailureListener>()
+  private acknowledgedListeners = new Set<TransactionAcknowledgedListener>()
   private environmentListenersAttached = false
 
   register<P, R>(definition: TransactionKind<P, R>) {
@@ -279,6 +289,14 @@ class TransactionQueue {
     }
   }
 
+  /** Called after the server acknowledged a batch and the confirmed state was persisted. */
+  onAcknowledged(listener: TransactionAcknowledgedListener) {
+    this.acknowledgedListeners.add(listener)
+    return () => {
+      this.acknowledgedListeners.delete(listener)
+    }
+  }
+
   /** Drop every pending transaction from memory and from the outbox. Used on logout. */
   async reset() {
     this.clearInSession()
@@ -383,6 +401,14 @@ class TransactionQueue {
 
     for (const record of batch) {
       record.resolve()
+    }
+
+    for (const listener of this.acknowledgedListeners) {
+      try {
+        listener({ records: batch })
+      } catch (listenerError) {
+        console.error("[transaction-queue] acknowledged listener threw", listenerError)
+      }
     }
   }
 

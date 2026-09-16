@@ -12,6 +12,7 @@ import { summaryActions } from "./modules/summary/store"
 import { translationActions } from "./modules/translation/store"
 import { unreadActions } from "./modules/unread/store"
 import { userActions } from "./modules/user/store"
+import { syncEngine } from "./sync/sync-engine"
 import { transactionQueue } from "./sync/transaction-queue"
 
 const hydrates: Hydratable[] = [
@@ -36,4 +37,6 @@ export const hydrateDatabaseToStore = async (options?: { migrateDatabase?: boole
   await Promise.all(hydrates.map((h) => h.hydrate()))
   // Replay mutations that were recorded but not acknowledged by the server before the last exit.
   await transactionQueue.restore()
+  // Pull the changes recorded on the server since the last session.
+  await syncEngine.start()
 }

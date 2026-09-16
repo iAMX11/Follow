@@ -1,3 +1,4 @@
+import type { SyncAPI, SyncDeltaResponse, SyncStateResponse } from "@follow/store/sync/types"
 import { userActions } from "@follow/store/user/store"
 import { createMobileAPIHeaders } from "@follow/utils/headers"
 import { FollowClient } from "@follow-app/client-sdk"
@@ -20,6 +21,21 @@ export const followClient = new FollowClient({
 })
 
 export const followApi = followClient.api
+
+/**
+ * `/sync` endpoints, requested directly until the client SDK ships its `sync` module.
+ */
+export const syncApi: SyncAPI = {
+  state: () => followClient.request<SyncStateResponse>("/sync/state", { method: "GET" }),
+  delta: (query) =>
+    followClient.request<SyncDeltaResponse>("/sync/delta", {
+      method: "GET",
+      query: {
+        lastSyncId: query.lastSyncId,
+        ...(query.limit ? { limit: query.limit } : {}),
+      },
+    }),
+}
 followClient.addRequestInterceptor(async (ctx) => {
   const { url } = ctx
 

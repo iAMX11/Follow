@@ -2,7 +2,12 @@ import "./wdyr"
 import "./styles/main.css"
 
 import { IN_ELECTRON, WEB_BUILD } from "@follow/shared/constants"
-import { apiContext, authClientContext, queryClientContext } from "@follow/store/context"
+import {
+  apiContext,
+  authClientContext,
+  queryClientContext,
+  syncApiContext,
+} from "@follow/store/context"
 import { getOS } from "@follow/utils/utils"
 import * as React from "react"
 import { flushSync } from "react-dom"
@@ -15,13 +20,14 @@ import { setAppIsReady } from "./atoms/app"
 import { ElECTRON_CUSTOM_TITLEBAR_HEIGHT } from "./constants"
 import { initializeApp } from "./initialize"
 import { registerAppGlobalShortcuts } from "./initialize/global-shortcuts"
-import { followApi } from "./lib/api-client"
+import { followApi, syncApi } from "./lib/api-client"
 import { queryClient } from "./lib/query-client"
 import { router } from "./router"
 
 authClientContext.provide(authClient)
 queryClientContext.provide(queryClient)
 apiContext.provide(followApi)
+syncApiContext.provide(syncApi)
 
 initializeApp().finally(() => {
   import("./push-notification").then(({ registerWebPushNotifications }) => {

@@ -225,3 +225,11 @@ export const syncTransactionsTable = sqliteTable(
   }),
   (table) => [index("idx_sync_transactions_created_at").on(table.createdAt)],
 )
+
+/**
+ * Small key/value store for sync bookkeeping, such as the last applied sync id.
+ */
+export const syncMetaTable = sqliteTable("sync_meta", (t) => ({
+  key: t.text("key").notNull().primaryKey(),
+  value: t.text("value").notNull(),
+}))

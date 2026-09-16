@@ -7,9 +7,9 @@ This document maps the design of Linear's sync engine (as reverse-engineered in
 onto Folo, evaluates which parts of it fit a feed reader, and lays out a phased plan for
 the client (`Folo`) and the server (`follow-server`).
 
-Phase 1 (client transaction queue) is implemented in this branch. Phases 2 and 3 need
-server changes and are specified here so they can be picked up without re-deriving the
-design.
+Phase 1 (client transaction queue) and Phase 2 (server change log, delta endpoints and
+the client sync engine) are implemented. Phase 3 (push channel) is specified here so it can
+be picked up without re-deriving the design.
 
 ## How Linear does it
 
@@ -167,100 +167,101 @@ Transaction kinds in this phase: `reads.mark-entries-read`, `reads.mark-entry-un
   close, so moving them needs a failure toast wired through `transactionQueue.onFailure`.
 - Surfacing definitive failures in the UI. The queue emits them; nothing renders them yet.
 
-## Phase 2: server change log and delta catch-up
+## Phase 2: server change log and delta catch-up (implemented)
 
 ### Goals
 
 - Replace "refetch everything on focus" with "fetch what changed since `lastSyncId`".
-- Remove `feedUnreadDirty`, `useSyncUnreadWhenUnMatch` and the subscription reset.
+- Let the client learn about read marks, subscription changes, stars and new entries made
+  elsewhere without polling full snapshots.
 - Let mutations return a sync id so the client knows when its own change is visible.
 
 ### Data model
 
-A per-user, append-only change log in Postgres:
+A per-user, append-only change log in Postgres (`packages/drizzle/src/schema/sync-actions.ts`,
+migration `0122_sync_actions`):
 
 ```sql
-create sequence sync_action_id_seq;
-
 create table sync_actions (
-  id         bigint primary key default nextval('sync_action_id_seq'),
-  user_id    text   not null references "user"(id) on delete cascade,
-  model      text   not null,   -- 'subscription' | 'list_subscription' | 'inbox' | 'timeline' | 'collection' | 'unread'
-  model_id   text   not null,   -- feedId / listId / inboxId / entryId
-  action     text   not null,   -- 'I' | 'U' | 'D' | 'N'
+  id         bigserial primary key,           -- one global sequence, like Linear's lastSyncId
+  user_id    text not null references "user"(id) on delete cascade,
+  model      text not null,                   -- 'subscription' | 'list_subscription' | 'collection' | 'timeline'
+  model_id   text,                            -- feedId / listId / entryId; null for batch timeline updates
+  action     text not null,                   -- 'I' | 'U' | 'D' | 'N'
   data       jsonb,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default clock_timestamp()
 );
-
 create index sync_actions_user_id_id_idx on sync_actions (user_id, id);
 ```
 
-The sequence is global, like Linear's `lastSyncId`, so ids are comparable across users and
-the client never needs to know which writer produced them. Rows older than the timeline
-retention window (14 or 28 days) are deleted by the cleaner; a client whose `lastSyncId`
-predates the oldest row must bootstrap again.
+`created_at` uses `clock_timestamp()` (insert time) rather than `now()` (transaction start).
+A row gets its id when it is inserted but only becomes visible when its transaction
+commits, so the delta endpoint excludes rows younger than one second: a client can never
+advance its cursor past an id whose row has not committed yet. Writers therefore record
+their actions as the last statement of a transaction.
+
+Rows older than 30 days are deleted by the `syncActionsCleaner` job. A cursor that predates
+the retained log gets `reset: true` and the client bootstraps again.
 
 Action semantics:
 
-| model               | action          | data                                         | produced by                                                                        |
-| ------------------- | --------------- | -------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `subscription`      | `I` / `U` / `D` | the subscription row (with feed for `I`)     | `/subscriptions` post, patch, batch, delete; `/categories`                         |
-| `list_subscription` | `I` / `U` / `D` | the list subscription row                    | `/subscriptions`, `/lists`                                                         |
-| `inbox`             | `I` / `U` / `D` | the inbox row                                | `/inboxes`                                                                         |
-| `collection`        | `I` / `D`       | `{ entryId, feedId, view, createdAt }`       | `/collections`                                                                     |
-| `timeline`          | `U`             | `{ entryIds, read }`                         | `/reads` post, delete, post-all (post-all lists the affected ids in chunks of 500) |
-| `timeline`          | `N`             | `{ feedId, count, latestPublishedAt, from }` | crawler fan-out, one row per (user, feed) per refresh that inserted rows           |
+| model               | action          | data                                                              | produced by                                                              |
+| ------------------- | --------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `subscription`      | `I`             | the subscription row plus `feeds` (the feed row)                  | `POST /subscriptions`                                                    |
+| `subscription`      | `U`             | the patched fields                                                | `PATCH /subscriptions`, `PATCH /subscriptions/batch`, `/categories`      |
+| `subscription`      | `D`             | none                                                              | `DELETE /subscriptions`, `DELETE /categories` with `deleteSubscriptions` |
+| `list_subscription` | `I` / `U` / `D` | the list subscription row plus `lists` (with `owner.id`)          | same routes, list branch                                                 |
+| `collection`        | `I` / `D`       | `{ entryId, feedId, view, createdAt }`                            | `/collections`, auto-star rules in the crawler                           |
+| `timeline`          | `U`             | `{ entryIds, read, isInbox }`, 500 ids per row                    | `POST /reads`, `DELETE /reads`, `POST /reads/all`                        |
+| `timeline`          | `N`             | `{ feedId, count, latestPublishedAt, from, entryIds (first 50) }` | crawler fan-out, one row per (user, feed) per refresh                    |
 
-The `N` action ("new entries arrived") is the coalesced form of Linear's `I` for timeline
-rows. It is enough for the client to bump the unread count, mark the feed as having new
-content, and refetch the visible list if that feed is on screen. The entries themselves
-keep coming through the existing paginated `/entries` endpoint, which stays the source of
-entry content.
+`N` ("new entries arrived") is the coalesced form of Linear's `I` for timeline rows. The
+crawler writes it after its fan-out transaction commits, in one statement for all
+subscribers, so the log never slows the hot path and a lost hint only costs a later
+refresh. Entries themselves keep coming through the paginated `/entries` endpoint.
 
-Writers call one helper inside the same transaction as the write they describe:
-
-```ts
-recordSyncActions(tx, userId, actions: Array<{ model, modelId, action, data }>)
-```
-
-For the crawler fan-out (`chunkInsertTimeline` in `services/feed.ts`), the helper runs
-after the timeline insert with one `N` row per user in the chunk. This is the hot path;
-the extra insert is one row per subscriber per refresh, an order of magnitude below the
-timeline rows already written.
+A subscription delete without an explicit type removes both the feed and the list
+subscription with that id on the server, so it logs one `D` per model; the client ignores
+the one it does not hold.
 
 ### Routes
 
-Both the Node app (`routes/sync/*.ts`) and the Worker (`routes/sync/index.worker.ts`)
-need the routes, following the pattern of the existing groups. Add `/sync` to
-`migratedWorkerRouteGroups`.
+Implemented for both the Node app (`routes/sync/*.ts`) and the Worker
+(`routes/sync/index.worker.ts`), with `/sync` in `migratedWorkerRouteGroups`.
 
-`GET /sync/bootstrap`
+`GET /sync/state` returns `{ lastSyncId }`. The client fetches it before taking a snapshot.
+A replica may report a lower id than the primary, which only makes the client replay a few
+actions twice; every action is idempotent so a lower cursor is always safe.
 
-Returns everything the client needs in one round trip:
-
-```json
-{
-  "code": 0,
-  "data": {
-    "lastSyncId": 123456,
-    "subscriptions": [...],   // same shape as GET /subscriptions
-    "unread": { "feedId": 3 } // same shape as GET /reads
-  }
-}
-```
-
-The client stores `lastSyncId` in a new `sync_meta` SQLite table (key/value) next to the
-snapshot it just applied.
-
-`GET /sync/delta?lastSyncId=123456&limit=1000`
+`GET /sync/delta?lastSyncId=N&limit=500` returns
 
 ```json
 {
   "code": 0,
   "data": {
     "actions": [
-      { "id": 123457, "model": "timeline", "modelId": "feed-1", "action": "N", "data": { "feedId": "feed-1", "count": 4, "latestPublishedAt": "...", "from": ["feed"] } },
-      { "id": 123458, "model": "subscription", "modelId": "feed-2", "action": "U", "data": { ... } }
+      {
+        "id": 123457,
+        "model": "timeline",
+        "modelId": "feed-1",
+        "action": "N",
+        "data": {
+          "feedId": "feed-1",
+          "count": 4,
+          "latestPublishedAt": "...",
+          "from": ["feed"],
+          "entryIds": ["..."]
+        },
+        "createdAt": "..."
+      },
+      {
+        "id": 123458,
+        "model": "subscription",
+        "modelId": "feed-2",
+        "action": "U",
+        "data": { "category": "Tech" },
+        "createdAt": "..."
+      }
     ],
     "lastSyncId": 123458,
     "hasMore": false,
@@ -269,25 +270,42 @@ snapshot it just applied.
 }
 ```
 
-`reset: true` is returned when `lastSyncId` is older than the oldest row for the user;
-the client then calls `/sync/bootstrap` again.
+Mutation responses of the logged routes carry `lastSyncId`, the highest id they produced.
 
-Mutation responses gain `lastSyncId` (the highest id they produced). The client uses it
-to close the "completed but unsynced" window exactly instead of the 30 s grace: a
-transaction is settled once the delta stream has passed its `lastSyncId`.
+Bootstrap deliberately reuses the existing snapshot endpoints instead of a new bundle:
+the client reads `/sync/state`, then `/subscriptions` and `/reads`, and stores the id it
+read first. Anything written between the two calls is replayed by the next delta.
 
 ### Client
 
-- `sync/sync-engine.ts` in `@follow/store`: `bootstrap()`, `pull()` (loop on `hasMore`),
-  `applyActions()` dispatching by model to the existing `*Actions.upsertManyInSession`
-  and `delete*InSession` methods, then `transactionQueue.rebase()`.
-- `pull()` runs on launch after `restore()`, on `online`/foreground, after every own
-  mutation ack, and on a 60 s interval while the window is visible. This replaces the
-  10-minute `InvalidateQueryProvider` sweep for user-owned models. Entry list queries keep
-  their own staleness rules.
-- Remove `feedUnreadDirty` and `useSyncUnreadWhenUnMatch` once `N` and `timeline U`
-  actions drive unread counts.
-- `subscriptionSyncService.fetch()` becomes the bootstrap path only.
+`packages/internal/store/src/sync/sync-engine.ts`:
+
+- `start()` runs after `transactionQueue.restore()` in `hydrateDatabaseToStore`. It loads
+  the cursor from the `sync_meta` SQLite table (migration `0039`), attaches the triggers
+  and pulls.
+- `pull()` bootstraps when there is no cursor, otherwise pages through `/sync/delta` and
+  applies each action: subscription `I`/`U`/`D` update the subscription, feed and list
+  stores and SQLite; collection `I`/`D` update the collection store; timeline `U` flips the
+  read flag of local entries, skipping entries with a pending local mark (the transaction
+  queue's overlay wins); timeline `N` marks the feed dirty.
+- After a pull that touched timelines or subscriptions the engine refreshes the unread
+  counts once through `/reads`, which the transaction queue rebases. Structural changes and
+  pulls triggered by launch or foreground also invalidate the affected entry lists.
+- Triggers: launch, `online`, `visibilitychange`, app foreground on mobile, a 60 s interval
+  while visible, and 1.5 s after the transaction queue receives an acknowledgement.
+- A 404 from `/sync/state` or `/sync/delta` marks the engine unavailable for the session,
+  so a client running against an older server keeps today's full refetch behaviour.
+- The apps call the endpoints through `followClient.request` (`syncApi` in each app's
+  `api-client.ts`) until the client SDK release that includes the `sync` module lands;
+  the shape matches `followApi.sync` so the swap is a one-line change.
+
+### Still to do
+
+- Remove `useSyncUnreadWhenUnMatch` and the 10-minute `InvalidateQueryProvider` sweep once
+  the delta path has proven itself in production.
+- Use the `lastSyncId` returned by mutations to settle transactions exactly instead of
+  the 30 s acknowledgement grace window.
+- List membership changes (`/lists/feeds`) and inbox changes are not logged yet.
 
 ## Phase 3: push channel
 
@@ -303,8 +321,9 @@ message with the same poke so background fetches can catch up.
 ## Rollout notes
 
 - Phase 1 needs no server change and can ship on its own.
-- Phase 2 can ship the change log writers first (dark launch), then the routes, then the
-  client. The client falls back to today's full refetch when `/sync/*` is unavailable.
+- Phase 2 ships server first (migration `0122`, then the Worker deploy) and the client
+  second. A client that reaches an older server gets 404 from `/sync/state` and keeps
+  today's full refetch behaviour for that session.
 - `sync_actions` grows with user activity, not with crawl volume, because timeline inserts
   are coalesced. Expected volume is well under one row per timeline insert.
 
