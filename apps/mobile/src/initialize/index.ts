@@ -15,6 +15,7 @@ import { initDeviceType } from "./device"
 import { hydrateQueryClient, hydrateSettings } from "./hydrate"
 import { migrateDatabase } from "./migration"
 import { initializePlayer } from "./player"
+import { initSyncTriggers } from "./sync"
 
 type RequestIdleCallback = (callback: () => void, options?: { timeout?: number }) => number
 
@@ -30,7 +31,6 @@ const runWhenIdle = (callback: () => void) => {
   setTimeout(callback, 0)
 }
 
-/* eslint-disable no-console */
 export const initializeApp = async () => {
   console.log(`Initialize...`)
 
@@ -86,6 +86,7 @@ export const initializeApp = async () => {
   })
 
   initBackgroundTask()
+  initSyncTriggers()
   console.log(`Initialize done,`, `${loadingTime}ms`)
 }
 

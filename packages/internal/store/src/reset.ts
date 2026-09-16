@@ -10,6 +10,7 @@ import { summaryActions } from "./modules/summary/store"
 import { translationActions } from "./modules/translation/store"
 import { unreadActions } from "./modules/unread/store"
 import { userActions } from "./modules/user/store"
+import { transactionQueue } from "./sync/transaction-queue"
 
 const resets: Resetable[] = [
   feedActions,
@@ -23,6 +24,7 @@ const resets: Resetable[] = [
   summaryActions,
   translationActions,
   imageActions,
+  transactionQueue,
 ]
 
 export const resetStore = async () => {
