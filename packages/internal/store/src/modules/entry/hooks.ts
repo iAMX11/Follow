@@ -1,4 +1,5 @@
 import type { FeedViewType } from "@follow/constants"
+import type { InfiniteData, QueryKey } from "@tanstack/react-query"
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import { useCallback, useMemo } from "react"
 
@@ -18,7 +19,7 @@ import {
 } from "./getter"
 import { entrySyncServices, useEntryStore } from "./store"
 import type { EntryModel, FetchEntriesProps, FetchEntriesPropsSettings } from "./types"
-import { getEffectiveEntrySortOrder, isTimelineEntriesSource } from "./utils"
+import { getEffectiveEntrySortOrder, isTimelineEntriesSource, mergeEntriesHead } from "./utils"
 
 export const invalidateEntriesQuery = ({
   views,
@@ -46,6 +47,110 @@ export const invalidateEntriesQuery = ({
       return false
     },
   })
+}
+
+type EntriesPage = Awaited<ReturnType<typeof entrySyncServices.fetchEntries>>
+type EntriesQueryData = InfiniteData<EntriesPage, string | undefined>
+
+const readEntriesQueryKey = (queryKey: QueryKey) => {
+  const [
+    ,
+    feedId,
+    inboxId,
+    listId,
+    view,
+    limit,
+    feedIdList,
+    isCollection,
+    unreadOnly,
+    hidePrivateSubscriptionsInTimeline,
+    aiSort,
+    sortOrder,
+  ] = queryKey as [
+    string,
+    FetchEntriesProps["feedId"],
+    FetchEntriesProps["inboxId"],
+    FetchEntriesProps["listId"],
+    FetchEntriesProps["view"],
+    FetchEntriesProps["limit"],
+    FetchEntriesProps["feedIdList"],
+    FetchEntriesProps["isCollection"],
+    boolean | undefined,
+    boolean | undefined,
+    boolean | undefined,
+    FetchEntriesProps["sortOrder"],
+  ]
+  return {
+    feedId,
+    inboxId,
+    listId,
+    view,
+    limit,
+    feedIdList,
+    isCollection,
+    unreadOnly,
+    hidePrivateSubscriptionsInTimeline,
+    aiSort,
+    sortOrder,
+  }
+}
+
+/**
+ * New entries arrived for these views. Fetch the first page of the entry lists that are on
+ * screen and merge it into what is loaded, instead of refetching every loaded page.
+ *
+ * Lists that are not mounted are left alone: they are fetched again when they are opened.
+ */
+export const refreshEntriesHead = async ({
+  views,
+  since,
+}: {
+  views: FeedViewType[]
+  /** Lists fetched after this moment already contain the new entries. */
+  since?: number
+}) => {
+  const client = queryClient()
+  const queries = client.getQueryCache().findAll({
+    predicate: (query) => {
+      const { queryKey } = query
+      return (
+        Array.isArray(queryKey) &&
+        queryKey[0] === "entries" &&
+        views.includes(queryKey[4] as FeedViewType)
+      )
+    },
+  })
+
+  await Promise.all(
+    queries.map(async (query) => {
+      const params = readEntriesQueryKey(query.queryKey)
+      const isCollectionQuery =
+        params.isCollection === true || params.feedId === FEED_COLLECTION_LIST
+      // Collections do not change with new entries, an AI sorted page is expensive to
+      // recompute, and an ascending list receives new entries at its far end.
+      if (isCollectionQuery || params.aiSort || params.sortOrder === "asc") return
+      if (!query.isActive() || query.state.fetchStatus === "fetching") return
+      if (!query.state.data) return
+      if (since !== undefined && query.state.dataUpdatedAt > since) return
+
+      const head = await entrySyncServices.fetchEntries({
+        feedId: params.feedId,
+        inboxId: params.inboxId,
+        listId: params.listId,
+        view: params.view,
+        limit: params.limit,
+        feedIdList: params.feedIdList,
+        isCollection: params.isCollection,
+        read: params.unreadOnly ? false : undefined,
+        excludePrivate: params.hidePrivateSubscriptionsInTimeline,
+        sortOrder: params.sortOrder,
+        pageParam: undefined,
+      })
+      client.setQueryData<EntriesQueryData>(query.queryKey, (current) =>
+        mergeEntriesHead(current, head),
+      )
+    }),
+  )
 }
 
 const defaultStaleTime = 10 * (60 * 1000) // 10 minutes
@@ -150,11 +255,24 @@ export const useEntriesQuery = (
     enabled: !!props,
     subscribed: options?.subscribed,
   })
-  const { fetchNextPage: queryFetchNextPage } = query
+  const { fetchNextPage: queryFetchNextPage, refetch: queryRefetch } = query
   const fetchNextPage = useCallback(
     (options?: Parameters<typeof queryFetchNextPage>[0]) =>
       queryFetchNextPage({ cancelRefetch: false, ...options }),
     [queryFetchNextPage],
+  )
+  // A refresh starts over from the top. Without trimming, the infinite query would request
+  // every page the user had scrolled through again, one after another.
+  const refetch = useCallback(
+    (options?: Parameters<typeof queryRefetch>[0]) => {
+      queryClient().setQueryData<EntriesQueryData>(queryKey, (current) =>
+        current && current.pages.length > 1
+          ? { pages: current.pages.slice(0, 1), pageParams: current.pageParams.slice(0, 1) }
+          : current,
+      )
+      return queryRefetch(options)
+    },
+    [queryKey, queryRefetch],
   )
 
   const entriesIds = useMemo(() => {
@@ -174,10 +292,11 @@ export const useEntriesQuery = (
     return {
       ...query,
       fetchNextPage,
+      refetch,
       entriesIds,
       queryKey,
     }
-  }, [entriesIds, fetchNextPage, query, queryKey])
+  }, [entriesIds, fetchNextPage, query, queryKey, refetch])
 }
 
 export const usePrefetchEntryDetail = (entryId: string | undefined, isInbox?: boolean) => {

@@ -9,6 +9,7 @@ import { createImmerSetter, createTransaction, createZustandStore } from "../../
 import { apiMorph } from "../../morph/api"
 import { dbStoreMorph } from "../../morph/db-store"
 import { buildSubscriptionDbId, storeDbMorph } from "../../morph/store-db"
+import { catchUpThroughEngine, ensureSyncedThroughEngine } from "../../sync/sync-status"
 import { invalidateEntriesQuery } from "../entry/hooks"
 import { getFeedById } from "../feed/getter"
 import { feedActions } from "../feed/store"
@@ -277,6 +278,21 @@ class SubscriptionSyncService {
       subscriptions,
       feeds: collections.feeds,
     }
+  }
+
+  /**
+   * Bring the subscriptions up to date after a user gesture or a server-side change. The
+   * delta feed does it when the sync engine runs; the full list is the fallback.
+   *
+   * Pass `afterServerChange` when the server just changed subscriptions outside the
+   * transaction queue (an import): fresh change-log rows are hidden for about a second.
+   */
+  async refresh(view?: FeedViewType, options?: { afterServerChange?: boolean }) {
+    const synced = options?.afterServerChange
+      ? await catchUpThroughEngine()
+      : await ensureSyncedThroughEngine()
+    if (synced) return
+    await this.fetch(view)
   }
 
   async edit(subscription: SubscriptionModel) {

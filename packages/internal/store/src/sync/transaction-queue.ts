@@ -1,6 +1,8 @@
 import { SyncTransactionService } from "@follow/database/services/sync-transaction"
 import { FollowAPIError } from "@follow-app/client-sdk"
 
+import { isSyncEngineActive } from "./sync-status"
+
 /**
  * A Linear-style transaction queue.
  *
@@ -29,7 +31,7 @@ export interface TransactionKind<P, R = unknown> {
   /** Send a batch of payloads to the server. */
   execute: (payloads: P[]) => Promise<R>
   /** Write the confirmed state to the local database after the server acknowledged the batch. */
-  persist?: (payloads: P[], result: R) => void | Promise<void>
+  persist?: (payloads: P[], result: R, context: TransactionPersistContext) => void | Promise<void>
   /** Adjacent transactions with the same batch key are executed with a single `execute` call. */
   batchKey?: (payload: P) => string
   maxBatchSize?: number
@@ -48,6 +50,15 @@ export interface TransactionKind<P, R = unknown> {
    * release condition when the server returned no sync id or the sync engine is unavailable.
    */
   ackGraceMs?: number
+}
+
+export interface TransactionPersistContext {
+  /**
+   * The server numbered the batch and the sync engine is running, so the change log will
+   * deliver what the batch really changed. Server-derived values such as unread counters
+   * must then be left to the change log instead of being guessed from the optimistic effect.
+   */
+  awaitsSync: boolean
 }
 
 export interface TransactionRecord<P = unknown> {
@@ -70,6 +81,13 @@ export interface TransactionAcknowledgedEvent {
 
 export type TransactionAcknowledgedListener = (event: TransactionAcknowledgedEvent) => void
 
+export interface TransactionSettledEvent {
+  records: TransactionRecord[]
+}
+
+/** Called when acknowledged transactions stop overriding server data. */
+export type TransactionSettledListener = (event: TransactionSettledEvent) => void
+
 interface QueuedTransaction<P = unknown> extends TransactionRecord<P> {
   definition: TransactionKind<P, unknown>
   settled: Promise<void>
@@ -81,6 +99,7 @@ interface AcknowledgedTransaction {
   record: QueuedTransaction
   expiresAt: number
   syncId?: number
+  awaitsSync: boolean
 }
 
 type ErrorDecision = "retry" | "pause" | "fail"
@@ -91,6 +110,12 @@ const MAX_RETRY_DELAY_MS = 60_000
 const MAX_ATTEMPTS = 8
 const DEFAULT_MAX_BATCH_SIZE = 200
 const DEFAULT_ACK_GRACE_MS = 30_000
+/**
+ * Upper bound for a transaction that waits for the change log. It is generous because the
+ * change log is the only source of the transaction's real effect on server-derived values;
+ * it only matters when pulls keep failing after the mutation itself went through.
+ */
+const SYNC_WAIT_MS = 5 * 60_000
 const RETRYABLE_STATUS = new Set([408, 425, 429])
 
 const noop = () => {}
@@ -144,6 +169,7 @@ class TransactionQueue {
   private idleWaiters: Array<() => void> = []
   private failureListeners = new Set<TransactionFailureListener>()
   private acknowledgedListeners = new Set<TransactionAcknowledgedListener>()
+  private settledListeners = new Set<TransactionSettledListener>()
   private environmentListenersAttached = false
 
   register<P, R>(definition: TransactionKind<P, R>) {
@@ -276,11 +302,18 @@ class TransactionQueue {
   }
 
   /**
-   * Re-apply the unread deltas of pending transactions onto counts that came from the server.
-   * Only keys in `touchedIds` are written back; when omitted every key may change.
+   * Re-apply the unread effects of local transactions onto counts confirmed by the server:
+   * everything still queued, plus acknowledged transactions whose real effect has not arrived
+   * through the change log yet. Only keys in `touchedIds` are written back; when omitted
+   * every key may change.
    */
   rebaseUnreadCounts(counts: Record<string, number>, touchedIds?: ReadonlySet<string>) {
+    this.pruneAcknowledged()
     const scratch = { ...counts }
+    for (const item of this.acknowledged) {
+      if (!item.awaitsSync) continue
+      item.record.definition.rebaseUnread?.(item.record.payload, scratch)
+    }
     for (const record of this.queued) {
       record.definition.rebaseUnread?.(record.payload, scratch)
     }
@@ -317,6 +350,17 @@ class TransactionQueue {
     this.acknowledgedListeners.add(listener)
     return () => {
       this.acknowledgedListeners.delete(listener)
+    }
+  }
+
+  /**
+   * Called after acknowledged transactions were released, because the sync engine caught up
+   * with them or their grace period ran out.
+   */
+  onSettled(listener: TransactionSettledListener) {
+    this.settledListeners.add(listener)
+    return () => {
+      this.settledListeners.delete(listener)
     }
   }
 
@@ -400,12 +444,27 @@ class TransactionQueue {
 
   private async completeBatch(batch: QueuedTransaction[], result: unknown) {
     const { definition } = batch[0]!
+    const syncId = definition.syncIdOf?.(result)
+    const awaitsSync = syncId !== undefined && isSyncEngineActive()
+    const keepsAcknowledged = !!definition.overlays || !!definition.rebaseUnread
+
+    // Hand the batch over from the queue to the acknowledged list in one step, so readers
+    // that rebase server data never see a moment in which the transaction is in neither.
     this.removeFromQueue(batch)
+    if (keepsAcknowledged) {
+      const expiresAt =
+        Date.now() + (awaitsSync ? SYNC_WAIT_MS : (definition.ackGraceMs ?? DEFAULT_ACK_GRACE_MS))
+      for (const record of batch) {
+        this.acknowledged.push({ record, expiresAt, syncId, awaitsSync })
+      }
+    }
+    this.touch()
 
     try {
       await definition.persist?.(
         batch.map((record) => record.payload),
         result,
+        { awaitsSync },
       )
     } catch (error) {
       console.error(`[transaction-queue] failed to persist ${definition.kind}`, error)
@@ -415,14 +474,8 @@ class TransactionQueue {
       console.error("[transaction-queue] failed to remove transactions from the outbox", error)
     })
 
-    if (definition.overlays) {
-      const expiresAt = Date.now() + (definition.ackGraceMs ?? DEFAULT_ACK_GRACE_MS)
-      const syncId = definition.syncIdOf?.(result)
-      for (const record of batch) {
-        this.acknowledged.push({ record, expiresAt, syncId })
-      }
-    }
-    this.touch()
+    // The sync engine may already be past this id, for instance when a pull overtook the response.
+    this.pruneAcknowledged()
 
     for (const record of batch) {
       record.resolve()
@@ -497,13 +550,27 @@ class TransactionQueue {
   private pruneAcknowledged() {
     if (this.acknowledged.length === 0) return
     const now = Date.now()
-    const next = this.acknowledged.filter(
-      (item) =>
-        item.expiresAt > now && (item.syncId === undefined || item.syncId > this.syncedThrough),
-    )
-    if (next.length !== this.acknowledged.length) {
-      this.acknowledged = next
-      this.touch()
+    const next: AcknowledgedTransaction[] = []
+    const settled: QueuedTransaction[] = []
+    for (const item of this.acknowledged) {
+      const pending =
+        item.expiresAt > now && (item.syncId === undefined || item.syncId > this.syncedThrough)
+      if (pending) {
+        next.push(item)
+      } else {
+        settled.push(item.record)
+      }
+    }
+    if (settled.length === 0) return
+
+    this.acknowledged = next
+    this.touch()
+    for (const listener of this.settledListeners) {
+      try {
+        listener({ records: settled })
+      } catch (listenerError) {
+        console.error("[transaction-queue] settled listener threw", listenerError)
+      }
     }
   }
 

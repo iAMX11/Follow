@@ -9,6 +9,7 @@ import { api } from "../../context"
 import type { Hydratable, Resetable } from "../../lib/base"
 import { createTransaction, createZustandStore } from "../../lib/helper"
 import { entryReadOverlayKey } from "../../sync/overlay-keys"
+import { ensureSyncedThroughEngine } from "../../sync/sync-status"
 import {
   defineTransactionKind,
   readLastSyncId,
@@ -137,12 +138,20 @@ export const markEntriesReadTransaction = defineTransactionKind<
     return { lastSyncId: readLastSyncId(res) }
   },
   syncIdOf: (result) => result.lastSyncId,
-  async persist(payloads) {
+  async persist(payloads, _result, { awaitsSync }) {
     await EntryService.patchMany({
       entry: { read: true },
       entryIds: mergeEntryIds(payloads),
     })
-    await unreadActions.persistCounts(mergeCountIds(payloads))
+    // With a change log the server reports how many rows really flipped; guessing here as
+    // well would count entries twice that another device had already marked.
+    if (!awaitsSync) {
+      await unreadActions.commitLocalEffect(mergeCountIds(payloads), (counts) => {
+        for (const payload of payloads) {
+          applyCountDelta(counts, payload.unreadCountById, "decrement")
+        }
+      })
+    }
   },
   overlays: (payload) =>
     payload.entryIds.map((entryId) => ({ key: entryReadOverlayKey(entryId), value: true })),
@@ -183,13 +192,17 @@ export const markEntryUnreadTransaction = defineTransactionKind<
     return { lastSyncId: readLastSyncId(res) }
   },
   syncIdOf: (result) => result.lastSyncId,
-  async persist(payloads) {
+  async persist(payloads, _result, { awaitsSync }) {
     const payload = payloads[0]!
     await EntryService.patchMany({
       entry: { read: false },
       entryIds: [payload.entryId],
     })
-    await unreadActions.persistCounts([payload.id])
+    if (!awaitsSync) {
+      await unreadActions.commitLocalEffect([payload.id], (counts) => {
+        applyCountDelta(counts, { [payload.id]: 1 }, "increment")
+      })
+    }
   },
   overlays: (payload) => [{ key: entryReadOverlayKey(payload.entryId), value: false }],
   rebaseUnread: (payload, counts) => {
@@ -211,7 +224,10 @@ export const markAllReadTransaction = defineTransactionKind<
     if (payload.time) {
       unreadActions.changeBatchInSession(payload.unreadCountById, "decrement")
     } else {
-      unreadActions.upsertManyInSession(payload.ids.map((id) => ({ id, count: 0 })))
+      unreadActions.upsertManyInSession(
+        payload.ids.map((id) => ({ id, count: 0 })),
+        { optimistic: true },
+      )
     }
   },
   async rollback(payload) {
@@ -228,18 +244,20 @@ export const markAllReadTransaction = defineTransactionKind<
     return { read: res.data.read, lastSyncId: readLastSyncId(res) }
   },
   syncIdOf: (result) => result.lastSyncId,
-  async persist(payloads, { read }) {
+  async persist(payloads, { read }, { awaitsSync }) {
     const payload = payloads[0]!
-    if (payload.time) {
+    if (!payload.time) {
+      // The server just marked everything in these feeds as read, so zero is confirmed
+      // state. The flips the change log reports afterwards are clamped at zero.
+      await unreadActions.upsertMany(payload.ids.map((id) => ({ id, count: 0 })))
+    } else if (!awaitsSync) {
       const finalUnreadList = Array.from(new Set([...payload.ids, ...Object.keys(read)])).map(
         (id) => ({
           id,
           count: Math.max(0, (payload.unreadBefore[id] ?? get().data[id] ?? 0) - (read[id] || 0)),
         }),
       )
-      await unreadActions.upsertMany(finalUnreadList, { fromRemote: true })
-    } else {
-      await UnreadService.upsertMany(payload.ids.map((id) => ({ id, count: 0 })))
+      await unreadActions.upsertMany(finalUnreadList)
     }
 
     await EntryService.patchMany({
@@ -266,14 +284,23 @@ export const markAllReadTransaction = defineTransactionKind<
 // ---------------------------------------------------------------------------
 
 class UnreadSyncService {
+  /**
+   * Bring the counters up to date after a user gesture. The delta feed does it when the sync
+   * engine runs; the recount is the fallback.
+   */
+  async refresh() {
+    if (await ensureSyncedThroughEngine()) return
+    await this.resetFromRemote()
+  }
+
   async resetFromRemote() {
     const res = await api().reads.get({})
 
-    if (isEqual(res.data, get().data)) {
+    if (unreadActions.isConfirmedEqual(res.data)) {
       return res.data
     }
 
-    await unreadActions.upsertMany(res.data, { reset: true, fromRemote: true })
+    await unreadActions.upsertMany(res.data, { reset: true })
     return res.data
   }
 
@@ -482,39 +509,90 @@ class UnreadSyncService {
 // ---------------------------------------------------------------------------
 
 type UnreadUpsertOptions = UnreadUpdateOptions & {
-  /**
-   * The counts come from the server. Pending transactions are rebased on top of them
-   * so a stale snapshot cannot undo what the user just did locally.
-   */
+  /** @deprecated Every write that is not optimistic is confirmed state now. */
   fromRemote?: boolean
+  /**
+   * The write is the local guess of a transaction. It changes what is displayed but not the
+   * confirmed counts, which only the server moves.
+   */
+  optimistic?: boolean
 }
 
+/**
+ * Unread counters are derived on the server, so the client keeps two layers, like Linear
+ * keeps a confirmed model under its local transactions:
+ *
+ * - the confirmed counts, moved by snapshots, by the change log and by transactions the
+ *   server acknowledged without a change log, and the only thing written to the database;
+ * - `data`, what the UI shows: the confirmed counts with every unsettled local transaction
+ *   re-applied on top.
+ *
+ * A transaction therefore never has to predict its real effect: when the change log reports
+ * what the server flipped, the prediction is simply dropped.
+ */
 class UnreadActions implements Hydratable, Resetable {
+  private confirmed: UnreadStoreModel = {}
+
   async hydrate() {
     const unreads = await UnreadService.getUnreadAll()
-    this.upsertManyInSession(unreads)
+    this.upsertManyInSession(unreads, { reset: true })
   }
 
   upsertManyInSession(unreads: UnreadSchema[], options?: UnreadUpsertOptions) {
-    const state = useUnreadStore.getState()
-    const nextData = options?.reset ? {} : { ...state.data }
+    if (options?.optimistic) {
+      const nextData = { ...useUnreadStore.getState().data }
+      for (const unread of unreads) {
+        nextData[unread.id] = unread.count
+      }
+      set({ data: nextData })
+      return
+    }
+
+    if (options?.reset) {
+      this.confirmed = {}
+    }
     for (const unread of unreads) {
-      nextData[unread.id] = unread.count
+      this.confirmed[unread.id] = unread.count
     }
-
-    if (options?.fromRemote) {
-      transactionQueue.rebaseUnreadCounts(
-        nextData,
-        options.reset ? undefined : new Set(unreads.map((unread) => unread.id)),
-      )
-    }
-
-    set({
-      data: nextData,
-    })
+    this.syncDisplayedCounts(options?.reset ? undefined : unreads.map((unread) => unread.id))
   }
 
-  /** Adjust counts in memory only. Used by transaction kinds for optimistic effects. */
+  /**
+   * Derive the displayed counts from the confirmed ones and the unsettled local transactions.
+   * Without `ids` everything is derived again, which also drops ids the server forgot.
+   */
+  syncDisplayedCounts(ids?: FeedIdOrInboxHandle[]) {
+    const current = useUnreadStore.getState().data
+
+    if (!ids) {
+      const nextData = { ...this.confirmed }
+      transactionQueue.rebaseUnreadCounts(nextData)
+      if (!isEqual(nextData, current)) {
+        set({ data: nextData })
+      }
+      return
+    }
+
+    if (ids.length === 0) return
+    const scratch: UnreadStoreModel = {}
+    for (const id of ids) {
+      scratch[id] = this.confirmed[id] ?? 0
+    }
+    transactionQueue.rebaseUnreadCounts(scratch, new Set(ids))
+
+    if (ids.every((id) => current[id] === scratch[id])) return
+    const nextData = { ...current }
+    for (const id of ids) {
+      nextData[id] = scratch[id] ?? 0
+    }
+    set({ data: nextData })
+  }
+
+  isConfirmedEqual(counts: UnreadStoreModel) {
+    return isEqual(counts, this.confirmed)
+  }
+
+  /** Adjust displayed counts only. Used by transaction kinds for optimistic effects. */
   changeBatchInSession(updates: UnreadStoreModel, type: "decrement" | "increment") {
     const entries = Object.entries(updates)
     if (entries.length === 0) return
@@ -524,11 +602,41 @@ class UnreadActions implements Hydratable, Resetable {
     set({ data: nextData })
   }
 
-  /** Write the current in-memory counts of the given ids to the local database. */
-  async persistCounts(ids: FeedIdOrInboxHandle[]) {
+  /**
+   * Move confirmed counts by what the server reported: rows that flipped on any device, or
+   * new unread entries. Increments commute, so the order of change-log pages does not matter.
+   */
+  async applyConfirmedDelta(deltas: UnreadStoreModel) {
+    const ids = Object.keys(deltas).filter((id) => !!id && !!deltas[id])
     if (ids.length === 0) return
-    const { data } = useUnreadStore.getState()
-    await UnreadService.upsertMany(ids.map((id) => ({ id, count: data[id] ?? 0 })))
+
+    for (const id of ids) {
+      this.confirmed[id] = Math.max(0, (this.confirmed[id] ?? 0) + deltas[id]!)
+    }
+    this.syncDisplayedCounts(ids)
+    await this.persistConfirmed(ids)
+  }
+
+  /**
+   * Make the effect of an acknowledged transaction part of the confirmed counts. Only used
+   * when no change log will report the real effect, so the prediction is all there is.
+   */
+  async commitLocalEffect(ids: FeedIdOrInboxHandle[], mutate: (counts: UnreadStoreModel) => void) {
+    if (ids.length === 0) return
+    const scratch: UnreadStoreModel = {}
+    for (const id of ids) {
+      scratch[id] = this.confirmed[id] ?? 0
+    }
+    mutate(scratch)
+    for (const id of ids) {
+      this.confirmed[id] = Math.max(0, scratch[id] ?? 0)
+    }
+    this.syncDisplayedCounts(ids)
+    await this.persistConfirmed(ids)
+  }
+
+  private async persistConfirmed(ids: FeedIdOrInboxHandle[]) {
+    await UnreadService.upsertMany(ids.map((id) => ({ id, count: this.confirmed[id] ?? 0 })))
   }
 
   async upsertMany(unreads: UnreadSchema[] | UnreadStoreModel, options?: UnreadUpsertOptions) {
@@ -538,36 +646,30 @@ class UnreadActions implements Hydratable, Resetable {
 
     const tx = createTransaction()
     tx.store(() => this.upsertManyInSession(normalizedUnreads, options))
-    // The database keeps the raw counts; pending transactions are replayed on top after a restart.
+    // The database keeps the confirmed counts; pending transactions are replayed on top after a restart.
     tx.persist(() => UnreadService.upsertMany(normalizedUnreads, { reset: options?.reset }))
     await tx.run()
   }
 
   async changeBatch(updates: UnreadStoreModel, type: "decrement" | "increment") {
-    const state = useUnreadStore.getState()
-    const dataToUpsert = Object.entries(updates).map(([id, count]) => {
-      const currentCount = state.data[id] || 0
-      return {
-        id,
-        count: type === "increment" ? currentCount + count : Math.max(0, currentCount - count),
-      }
-    })
-    await this.upsertMany(dataToUpsert)
+    const deltas: UnreadStoreModel = {}
+    for (const [id, count] of Object.entries(updates)) {
+      deltas[id] = type === "increment" ? count : -count
+    }
+    await this.applyConfirmedDelta(deltas)
   }
 
   addUnread(id: FeedIdOrInboxHandle, count = 1) {
-    const state = useUnreadStore.getState()
-    const cur = state.data[id] ?? 0
+    const cur = useUnreadStore.getState().data[id] ?? 0
     if (count <= 0) return cur
-    this.upsertMany([{ id, count: cur + count }])
+    void this.applyConfirmedDelta({ [id]: count })
     return cur
   }
 
   removeUnread(id: FeedIdOrInboxHandle, count = 1) {
-    const state = useUnreadStore.getState()
-    const cur = state.data[id] ?? 0
+    const cur = useUnreadStore.getState().data[id] ?? 0
     if (count <= 0) return cur
-    this.upsertMany([{ id, count: Math.max(0, cur - count) }])
+    void this.applyConfirmedDelta({ [id]: -count })
     return cur
   }
 
@@ -577,9 +679,8 @@ class UnreadActions implements Hydratable, Resetable {
 
   async updateById(id: FeedIdOrInboxHandle | undefined | null, count: number) {
     if (!id) return
-    const state = useUnreadStore.getState()
-    const cur = state.data[id] ?? 0
-    if (cur === count) return
+    if ((this.confirmed[id] ?? 0) === count && (useUnreadStore.getState().data[id] ?? 0) === count)
+      return
     await this.upsertMany([{ id, count }])
   }
 
@@ -601,6 +702,7 @@ class UnreadActions implements Hydratable, Resetable {
   async reset() {
     const tx = createTransaction()
     tx.store(() => {
+      this.confirmed = {}
       set(initialUnreadStore)
     })
 
@@ -614,3 +716,11 @@ class UnreadActions implements Hydratable, Resetable {
 
 export const unreadActions = new UnreadActions()
 export const unreadSyncService = new UnreadSyncService()
+
+// A settled transaction no longer overrides the confirmed counts. When the change log
+// reported fewer flips than predicted, this is the moment the prediction is corrected.
+transactionQueue.onSettled(({ records }) => {
+  if (records.some((record) => record.kind.startsWith("reads."))) {
+    unreadActions.syncDisplayedCounts()
+  }
+})

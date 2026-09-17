@@ -1,7 +1,8 @@
 import { FollowAPIError } from "@follow-app/client-sdk"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { TransactionKind } from "./transaction-queue"
+import { setSyncEngineActive } from "./sync-status"
+import type { TransactionKind, TransactionPersistContext } from "./transaction-queue"
 import { classifyTransactionError, transactionQueue } from "./transaction-queue"
 
 const { outboxRows, outboxInsertMock, outboxDeleteManyMock, outboxGetAllMock, outboxResetMock } =
@@ -88,6 +89,7 @@ describe("transactionQueue", () => {
 
   afterEach(() => {
     transactionQueue.clearInSession()
+    setSyncEngineActive(false)
     vi.useRealTimers()
   })
 
@@ -272,6 +274,87 @@ describe("transactionQueue", () => {
 
     transactionQueue.markSynced(42)
     expect(transactionQueue.getOverlays().get("counter:a")).toBeUndefined()
+  })
+
+  it("keeps rebasing an acknowledged transaction until the change log caught up, then reports it settled", async () => {
+    setSyncEngineActive(true)
+    const persistContexts: TransactionPersistContext[] = []
+    const kind = createCounterKind({
+      execute: vi.fn(async () => ({ lastSyncId: 42 })),
+      syncIdOf: (result) => (result as { lastSyncId?: number }).lastSyncId,
+      persist: async (_payloads, _result, context) => {
+        persistContexts.push(context)
+      },
+    })
+    const settled = vi.fn()
+    const stopListening = transactionQueue.onSettled(settled)
+
+    await transactionQueue.enqueue(kind, { key: "a", delta: -1 })
+    await vi.advanceTimersByTimeAsync(100)
+    await transactionQueue.whenIdle()
+
+    expect(persistContexts).toEqual([{ awaitsSync: true }])
+    const beforeSync = { a: 5 }
+    transactionQueue.rebaseUnreadCounts(beforeSync)
+    expect(beforeSync).toEqual({ a: 4 })
+    // The ordinary grace period does not release it: only the change log knows the real effect.
+    await vi.advanceTimersByTimeAsync(60_000)
+    transactionQueue.rebaseUnreadCounts(beforeSync)
+    expect(beforeSync).toEqual({ a: 3 })
+    expect(settled).not.toHaveBeenCalled()
+
+    transactionQueue.markSynced(42)
+
+    expect(settled).toHaveBeenCalledTimes(1)
+    expect(
+      settled.mock.calls[0]![0].records.map((record: { kind: string }) => record.kind),
+    ).toEqual(["test.counter"])
+    const afterSync = { a: 5 }
+    transactionQueue.rebaseUnreadCounts(afterSync)
+    expect(afterSync).toEqual({ a: 5 })
+
+    stopListening()
+  })
+
+  it("settles at once when the engine is already past the acknowledged sync id", async () => {
+    setSyncEngineActive(true)
+    transactionQueue.markSynced(50)
+    const kind = createCounterKind({
+      execute: vi.fn(async () => ({ lastSyncId: 42 })),
+      syncIdOf: (result) => (result as { lastSyncId?: number }).lastSyncId,
+    })
+    const settled = vi.fn()
+    const stopListening = transactionQueue.onSettled(settled)
+
+    await transactionQueue.enqueue(kind, { key: "a", delta: -1 })
+    await vi.advanceTimersByTimeAsync(100)
+    await transactionQueue.whenIdle()
+
+    expect(settled).toHaveBeenCalledTimes(1)
+    expect(transactionQueue.getOverlays().get("counter:a")).toBeUndefined()
+    stopListening()
+  })
+
+  it("does not rebase acknowledged transactions when no change log will follow", async () => {
+    const persistContexts: TransactionPersistContext[] = []
+    const kind = createCounterKind({
+      execute: vi.fn(async () => ({ lastSyncId: 42 })),
+      syncIdOf: (result) => (result as { lastSyncId?: number }).lastSyncId,
+      persist: async (_payloads, _result, context) => {
+        persistContexts.push(context)
+      },
+    })
+
+    await transactionQueue.enqueue(kind, { key: "a", delta: -1 })
+    await vi.advanceTimersByTimeAsync(100)
+    await transactionQueue.whenIdle()
+
+    // The engine is not running, so the kind commits its prediction itself.
+    expect(persistContexts).toEqual([{ awaitsSync: false }])
+    const counts = { a: 5 }
+    transactionQueue.rebaseUnreadCounts(counts)
+    expect(counts).toEqual({ a: 5 })
+    expect(transactionQueue.getOverlays().get("counter:a")).toBe(-1)
   })
 
   it("rebases unread counts with pending transactions only", async () => {

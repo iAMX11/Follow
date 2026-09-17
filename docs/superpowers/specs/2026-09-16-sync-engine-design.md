@@ -205,20 +205,20 @@ the retained log gets `reset: true` and the client bootstraps again.
 
 Action semantics:
 
-| model               | action          | data                                                              | produced by                                                                                                         |
-| ------------------- | --------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `subscription`      | `I`             | the subscription row plus `feeds` (the feed row)                  | `POST /subscriptions`                                                                                               |
-| `subscription`      | `U`             | the patched fields                                                | `PATCH /subscriptions`, `PATCH /subscriptions/batch`, `/categories`                                                 |
-| `subscription`      | `D`             | none                                                              | `DELETE /subscriptions`, `DELETE /categories` with `deleteSubscriptions`                                            |
-| `list_subscription` | `I` / `U` / `D` | the list subscription row plus `lists` (with `owner.id`)          | same routes, list branch; `POST /lists` for the owner; `U { view }` for every subscriber when the list view changes |
-| `collection`        | `I` / `D`       | `{ entryId, feedId, view, createdAt }`                            | `/collections`, auto-star rules in the crawler                                                                      |
-| `timeline`          | `U`             | `{ entryIds, read, isInbox }`, 500 ids per row                    | `POST /reads`, `DELETE /reads`, `POST /reads/all`                                                                   |
-| `timeline`          | `N`             | `{ feedId, count, latestPublishedAt, from, entryIds (first 50) }` | crawler fan-out, one row per (user, feed) per refresh                                                               |
-| `timeline`          | `N`             | `{ inboxId, isInbox: true, count, entryIds, latestPublishedAt }`  | new inbox entry from `/inboxes/email` or `/inboxes/webhook`                                                         |
-| `list`              | `U`             | the patched fields, or `{ feedIds }` when membership changed      | `PATCH /lists`, `POST /lists/feeds`, `DELETE /lists/feeds`; sent to the owner and every subscriber                  |
-| `list`              | `D`             | none                                                              | `DELETE /lists`; sent to the owner and every subscriber, who also drop their subscription                           |
-| `inbox`             | `I` / `U` / `D` | the inbox in `GET /subscriptions` shape, `{ title }`, none        | `/inboxes`                                                                                                          |
-| `inbox_entry`       | `D`             | `{ inboxId }`                                                     | `DELETE /entries/inbox`                                                                                             |
+| model               | action          | data                                                                                                                                          | produced by                                                                                                         |
+| ------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `subscription`      | `I`             | the subscription row plus `feeds` (the feed row)                                                                                              | `POST /subscriptions`; one per feed really added by `POST /subscriptions/import`                                    |
+| `subscription`      | `U`             | the patched fields                                                                                                                            | `PATCH /subscriptions`, `PATCH /subscriptions/batch`, `/categories`                                                 |
+| `subscription`      | `D`             | none                                                                                                                                          | `DELETE /subscriptions`, `DELETE /categories` with `deleteSubscriptions`                                            |
+| `list_subscription` | `I` / `U` / `D` | the list subscription row plus `lists` (with `owner.id`)                                                                                      | same routes, list branch; `POST /lists` for the owner; `U { view }` for every subscriber when the list view changes |
+| `collection`        | `I` / `D`       | `{ entryId, feedId, view, createdAt }`                                                                                                        | `/collections`, auto-star rules in the crawler                                                                      |
+| `timeline`          | `U`             | `{ entryIds, read, isInbox, feeds }` for rows that really flipped, 500 ids per row; `feeds` counts them per feed id or inbox handle           | `POST /reads`, `DELETE /reads`, `POST /reads/all`                                                                   |
+| `timeline`          | `N`             | `{ feedId, count, unread, latestPublishedAt, from, entryIds (first 50) }`; `count` is rows really inserted, `unread` those inserted as unread | crawler fan-out, one row per (user, feed) per refresh                                                               |
+| `timeline`          | `N`             | `{ inboxId, isInbox: true, count, unread, entryIds, latestPublishedAt }`                                                                      | new inbox entry from `/inboxes/email` or `/inboxes/webhook`                                                         |
+| `list`              | `U`             | the patched fields, or `{ feedIds }` when membership changed                                                                                  | `PATCH /lists`, `POST /lists/feeds`, `DELETE /lists/feeds`; sent to the owner and every subscriber                  |
+| `list`              | `D`             | none                                                                                                                                          | `DELETE /lists`; sent to the owner and every subscriber, who also drop their subscription                           |
+| `inbox`             | `I` / `U` / `D` | the inbox in `GET /subscriptions` shape, `{ title }`, none                                                                                    | `/inboxes`                                                                                                          |
+| `inbox_entry`       | `D`             | `{ inboxId, unread }`, `unread` says whether the deleted entry was unread                                                                     | `DELETE /entries/inbox`                                                                                             |
 
 `N` ("new entries arrived") is the coalesced form of Linear's `I` for timeline rows. The
 crawler writes it after its fan-out transaction commits, in one statement for all
@@ -231,6 +231,15 @@ go through `recordSyncActionsSafely`, so a failed log write never fails the requ
 A subscription delete without an explicit type removes both the feed and the list
 subscription with that id on the server, so it logs one `D` per model; the client ignores
 the one it does not hold.
+
+Unread counters are derived on the server, and a client that holds only part of the
+timeline cannot recompute them. The log therefore carries the numbers a client needs to
+move its counters: read mutations update only rows whose state flips
+(`WHERE read = <old>` ... `RETURNING feed_id`) and log the flips per feed, and the crawler
+reports the rows its `ON CONFLICT DO NOTHING` insert really wrote. These are increments,
+so they commute and the order of pages does not matter. A read mutation that flips
+nothing writes no action and answers with the user's current `lastSyncId`; a retried
+request therefore settles exactly like its first attempt.
 
 ### Routes
 
@@ -303,12 +312,38 @@ read first. Anything written between the two calls is replayed by the next delta
   their overlays as soon as the engine has applied that id. The 30 s window only remains
   as the upper bound for responses without a sync id or a server without `/sync`.
 - `sync/sync-status.ts` exposes whether the engine is active. While it is,
-  `useSyncUnreadWhenUnMatch` stands down and the desktop `InvalidateQueryProvider` skips
-  the `entries`, `subscription` and `unread` queries, because the engine pulls on every
-  return to the app and refetches only the entry lists that changed.
-- After a pull that touched timelines or subscriptions the engine refreshes the unread
-  counts once through `/reads`, which the transaction queue rebases. Structural changes and
-  pulls triggered by launch or foreground also invalidate the affected entry lists.
+  the desktop `InvalidateQueryProvider` skips the `entries`, `subscription` and `unread`
+  queries, because the engine pulls on every return to the app and fetches only what
+  changed.
+- Unread counters are kept in two layers, the way Linear keeps a confirmed model under its
+  local transactions. The confirmed counts are moved by snapshots and by the numbers in the
+  log (`feeds` on `U`, `unread` on `N` and on `inbox_entry` `D`) and are the only thing
+  written to SQLite. The displayed counts are the confirmed ones with every unsettled local
+  transaction rebased on top: queued transactions, plus acknowledged ones whose `lastSyncId`
+  the engine has not reached. A transaction never has to predict its real effect: when the
+  log reports what the server flipped, the prediction is dropped. Marking whole feeds as
+  read confirms zero directly, and later flips are clamped at zero. Without a change log
+  (`awaitsSync` is false in `persist`) the prediction is committed instead, as before.
+- With a cursor in place the local database plus the delta feed is the state, so nothing
+  fetches full snapshots for freshness. `usePrefetchSubscription`, `usePrefetchUnread`,
+  pull to refresh, the refresh button, OPML import, unsubscribe and the mobile background
+  task all go through `ensureSynced()` / `catchUp()` (reached via `sync/sync-status.ts` to
+  stay free of import cycles) and only fall back to `/subscriptions` and `/reads` when the
+  engine cannot help: logged out, no cursor yet, or a server without `/sync`.
+- Snapshots are taken again only as calibration, for what the log cannot express: `/reads`
+  at most hourly, because unread entries age out of the retention window without an
+  action, and `/subscriptions` daily, because feed metadata is not owned by the user. A
+  recount also follows actions that change counters structurally (a subscription or list
+  membership added) or that come from a server that does not send the numbers yet, and
+  `useSyncUnreadWhenUnMatch` asks for one, at most once a minute, when the list on screen
+  still shows more unread entries than the counter after a delta pull.
+- New entries never rearrange what is loaded. On launch, foreground and manual pulls the
+  engine fetches only the first page of the entry lists on screen (`refreshEntriesHead`)
+  and merges it in front of the loaded pages (`mergeEntriesHead`); lists fetched after the
+  `N` was logged are skipped, and background pulls leave lists alone while the user reads.
+  Structural changes still invalidate the affected lists. `useEntriesQuery().refetch` trims
+  the infinite query to its first page first, so a refresh costs one request instead of one
+  per loaded page.
 - Triggers: launch, `online`, `visibilitychange`, app foreground on mobile, a 60 s interval
   while visible, and 1.5 s after the transaction queue receives an acknowledgement.
 - A 404 from `/sync/state` or `/sync/delta` marks the engine unavailable for the session,
@@ -318,9 +353,12 @@ read first. Anything written between the two calls is replayed by the next delta
 
 ### Still to do
 
-- Delete `useSyncUnreadWhenUnMatch`, the `feedUnreadDirty` atoms and the sync-managed part of
-  `InvalidateQueryProvider` outright once every deployed server exposes `/sync`. Today they
-  are the fallback for servers without it and are disabled while the engine is active.
+- Delete the full-request fallbacks (`subscriptionSyncService.fetch` in the prefetch hook,
+  the `feedUnreadDirty` atoms, the sync-managed part of `InvalidateQueryProvider`) outright
+  once every deployed server exposes `/sync`. Today they serve servers without it.
+- `subscription` `I` still triggers a recount, because the seeded timeline rows of a new
+  subscription are not reported. Carrying the number of rows inside the retention window
+  would remove the last routine `/reads` request.
 - Phase 3 below, so other devices learn about a change without waiting for their next pull.
 
 ## Phase 3: push channel

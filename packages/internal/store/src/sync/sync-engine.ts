@@ -9,7 +9,7 @@ import { FollowAPIError } from "@follow-app/client-sdk"
 import { syncApi } from "../context"
 import type { Resetable } from "../lib/base"
 import { collectionActions } from "../modules/collection/store"
-import { invalidateEntriesQuery } from "../modules/entry/hooks"
+import { invalidateEntriesQuery, refreshEntriesHead } from "../modules/entry/hooks"
 import { entryActions } from "../modules/entry/store"
 import { setFeedUnreadDirty } from "../modules/feed/hooks"
 import { feedActions } from "../modules/feed/store"
@@ -28,7 +28,7 @@ import { unreadActions, unreadSyncService } from "../modules/unread/store"
 import { whoami } from "../modules/user/getters"
 import { apiMorph } from "../morph/api"
 import { entryReadOverlayKey } from "./overlay-keys"
-import { setSyncEngineActive } from "./sync-status"
+import { registerSyncEngine, setSyncEngineActive } from "./sync-status"
 import { isNavigatorOnline, transactionQueue } from "./transaction-queue"
 import type {
   CollectionActionData,
@@ -46,10 +46,23 @@ import type {
  * the current id from the server and then loads full snapshots; every later pull asks for
  * the actions recorded after the cursor and applies them to the stores. Pending local
  * transactions keep precedence through the transaction queue's overlays.
+ *
+ * Once a cursor exists the snapshots are not needed for freshness any more: the local
+ * database plus the delta feed is the state. Snapshots are only taken again as a rare
+ * calibration, for the things the change log cannot express: unread entries ageing out of
+ * the retention window, and feed metadata, which is not owned by the user.
  */
 
 const LAST_SYNC_ID_KEY = "lastSyncId"
+const UNREAD_CALIBRATED_AT_KEY = "unreadCalibratedAt"
+const SUBSCRIPTIONS_CALIBRATED_AT_KEY = "subscriptionsCalibratedAt"
 const PULL_INTERVAL_MS = 60_000
+const UNREAD_CALIBRATION_INTERVAL_MS = 60 * 60_000
+const SUBSCRIPTIONS_CALIBRATION_INTERVAL_MS = 24 * 60 * 60_000
+/** A recount asked for by the UI is not repeated more often than this. */
+const REQUESTED_CALIBRATION_MIN_INTERVAL_MS = 60_000
+/** `ensureSynced` callers arriving within this window share the previous pull. */
+const FRESH_PULL_WINDOW_MS = 5000
 /** The server hides actions younger than one second; wait a bit longer after an ack. */
 const ACK_PULL_DELAY_MS = 1500
 const MAX_PAGES_PER_PULL = 20
@@ -59,31 +72,42 @@ export type SyncPullReason = "launch" | "resume" | "interval" | "ack" | "manual"
 type SubscriptionSyncPayload = Parameters<typeof apiMorph.toSubscription>[0][number]
 
 interface PullSummary {
+  /** An action changed unread counters in a way only a recount can resolve. */
   refreshUnread: boolean
+  /** Views whose timelines changed structurally: a subscription or list membership moved. */
   invalidateViews: Set<FeedViewType>
-  /** Structural changes (subscriptions added or removed) always refetch the affected lists. */
-  forceInvalidate: boolean
+  /** Views that received new entries; only the head of their lists needs fetching. */
+  newEntryViews: Set<FeedViewType>
+  /** When the newest of those entries was logged, to skip lists fetched after it. */
+  newestEntryAt: number
 }
 
 const createPullSummary = (): PullSummary => ({
   refreshUnread: false,
   invalidateViews: new Set(),
-  forceInvalidate: false,
+  newEntryViews: new Set(),
+  newestEntryAt: 0,
 })
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null
 
-const addView = (summary: PullSummary, view: FeedViewType | undefined) => {
+const addView = (views: Set<FeedViewType>, view: FeedViewType | undefined) => {
   if (typeof view !== "number") return
-  summary.invalidateViews.add(view)
-  summary.invalidateViews.add(FeedViewType.All)
+  views.add(view)
+  views.add(FeedViewType.All)
 }
+
+const isCountRecord = (value: unknown): value is Record<string, number> =>
+  isRecord(value) && Object.values(value).every((count) => typeof count === "number")
 
 class SyncEngine implements Resetable {
   private lastSyncId: number | null = null
   private loaded = false
   private unavailable = false
+  private unreadCalibratedAt = 0
+  private subscriptionsCalibratedAt = 0
+  private lastPullFinishedAt = 0
   private pulling: Promise<void> | null = null
   private pullTimer: ReturnType<typeof setTimeout> | null = null
   private intervalTimer: ReturnType<typeof setInterval> | null = null
@@ -109,9 +133,15 @@ class SyncEngine implements Resetable {
   private async loadCursor() {
     if (this.loaded) return
     try {
-      const stored = await SyncMetaService.get(LAST_SYNC_ID_KEY)
+      const [stored, unreadCalibratedAt, subscriptionsCalibratedAt] = await Promise.all([
+        SyncMetaService.get(LAST_SYNC_ID_KEY),
+        SyncMetaService.get(UNREAD_CALIBRATED_AT_KEY),
+        SyncMetaService.get(SUBSCRIPTIONS_CALIBRATED_AT_KEY),
+      ])
       const parsed = stored === null ? Number.NaN : Number(stored)
       this.lastSyncId = Number.isFinite(parsed) ? parsed : null
+      this.unreadCalibratedAt = Number(unreadCalibratedAt) || 0
+      this.subscriptionsCalibratedAt = Number(subscriptionsCalibratedAt) || 0
       setSyncEngineActive(this.lastSyncId !== null)
     } catch (error) {
       console.error("[sync-engine] failed to load the sync cursor", error)
@@ -142,8 +172,48 @@ class SyncEngine implements Resetable {
       })
       .finally(() => {
         this.pulling = null
+        this.lastPullFinishedAt = Date.now()
       })
     return this.pulling
+  }
+
+  /**
+   * Bring the stores up to date through the engine and say whether that was possible.
+   *
+   * `true` means the local stores are the state: either the delta feed was applied on top of
+   * the local snapshot, or a bootstrap just loaded everything. Callers must not fetch their
+   * own snapshot then. `false` means the engine cannot help (logged out, or the server has no
+   * sync endpoints) and the caller has to fall back to its full request.
+   *
+   * A pull that fails with a cursor in place still answers `true`: the local snapshot is the
+   * best state there is, and the next trigger retries.
+   */
+  async ensureSynced(): Promise<boolean> {
+    if (this.unavailable || !whoami()) return false
+    if (this.pulling || Date.now() - this.lastPullFinishedAt > FRESH_PULL_WINDOW_MS) {
+      await this.pull("manual")
+    }
+    return !this.unavailable && this.lastSyncId !== null
+  }
+
+  /**
+   * Pick up a change the server made outside the transaction queue, for instance an import.
+   * The delay covers the second during which the server hides fresh actions.
+   */
+  async catchUp(delayMs = ACK_PULL_DELAY_MS): Promise<boolean> {
+    if (this.unavailable || this.lastSyncId === null) return false
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+    await this.pull("manual")
+    return !this.unavailable && this.lastSyncId !== null
+  }
+
+  /**
+   * The UI noticed counters that cannot be right. Recount, but not more often than once a
+   * minute: the usual cause is a list that is simply ahead of the next pull.
+   */
+  async requestUnreadCalibration() {
+    if (Date.now() - this.unreadCalibratedAt < REQUESTED_CALIBRATION_MIN_INTERVAL_MS) return
+    await this.calibrateUnread()
   }
 
   /** Take the server's current id, then load full snapshots. Later pulls are incremental. */
@@ -158,14 +228,49 @@ class SyncEngine implements Resetable {
     }
 
     await subscriptionSyncService.fetch()
+    await this.markCalibrated(SUBSCRIPTIONS_CALIBRATED_AT_KEY)
     await unreadSyncService.resetFromRemote()
+    await this.markCalibrated(UNREAD_CALIBRATED_AT_KEY)
     await this.setLastSyncId(lastSyncId)
+  }
+
+  private async calibrateUnread() {
+    // Claim the slot first so concurrent triggers do not recount twice.
+    await this.markCalibrated(UNREAD_CALIBRATED_AT_KEY)
+    await unreadSyncService.resetFromRemote().catch((error) => {
+      console.error("[sync-engine] failed to recount unread entries", error)
+    })
+  }
+
+  private async calibrateSubscriptions() {
+    await this.markCalibrated(SUBSCRIPTIONS_CALIBRATED_AT_KEY)
+    await subscriptionSyncService.fetch().catch((error) => {
+      console.error("[sync-engine] failed to refresh subscriptions", error)
+    })
+  }
+
+  private async markCalibrated(
+    key: typeof UNREAD_CALIBRATED_AT_KEY | typeof SUBSCRIPTIONS_CALIBRATED_AT_KEY,
+  ) {
+    const now = Date.now()
+    if (key === UNREAD_CALIBRATED_AT_KEY) {
+      this.unreadCalibratedAt = now
+    } else {
+      this.subscriptionsCalibratedAt = now
+    }
+    await SyncMetaService.set(key, String(now)).catch((error) => {
+      console.error("[sync-engine] failed to persist the calibration time", error)
+    })
   }
 
   /** Forget the cursor. Used on logout; the next start bootstraps again. */
   async reset() {
     this.clearInSession()
-    await SyncMetaService.delete(LAST_SYNC_ID_KEY).catch((error) => {
+    await Promise.all(
+      [LAST_SYNC_ID_KEY, UNREAD_CALIBRATED_AT_KEY, SUBSCRIPTIONS_CALIBRATED_AT_KEY].map((key) =>
+        SyncMetaService.delete(key),
+      ),
+    ).catch((error) => {
       console.error("[sync-engine] failed to clear the sync cursor", error)
     })
   }
@@ -178,6 +283,9 @@ class SyncEngine implements Resetable {
     this.lastSyncId = null
     this.loaded = false
     this.unavailable = false
+    this.unreadCalibratedAt = 0
+    this.subscriptionsCalibratedAt = 0
+    this.lastPullFinishedAt = 0
     setSyncEngineActive(false)
   }
 
@@ -224,17 +332,29 @@ class SyncEngine implements Resetable {
   }
 
   private async finishPull(summary: PullSummary, reason: SyncPullReason) {
-    if (summary.refreshUnread) {
-      await unreadSyncService.resetFromRemote().catch((error) => {
-        console.error("[sync-engine] failed to refresh unread counts", error)
-      })
+    const now = Date.now()
+    if (summary.refreshUnread || now - this.unreadCalibratedAt > UNREAD_CALIBRATION_INTERVAL_MS) {
+      await this.calibrateUnread()
+    }
+    if (now - this.subscriptionsCalibratedAt > SUBSCRIPTIONS_CALIBRATION_INTERVAL_MS) {
+      await this.calibrateSubscriptions()
     }
 
-    const shouldInvalidate =
-      summary.invalidateViews.size > 0 &&
-      (summary.forceInvalidate || reason === "launch" || reason === "resume")
-    if (shouldInvalidate) {
+    if (summary.invalidateViews.size > 0) {
       invalidateEntriesQuery({ views: Array.from(summary.invalidateViews) })
+    }
+
+    // New entries never rearrange what is already loaded, so only the head of the lists on
+    // screen is fetched. While the user is reading, the lists are left alone.
+    const headViews = Array.from(summary.newEntryViews).filter(
+      (view) => !summary.invalidateViews.has(view),
+    )
+    if (headViews.length > 0 && reason !== "interval" && reason !== "ack") {
+      await refreshEntriesHead({ views: headViews, since: summary.newestEntryAt }).catch(
+        (error) => {
+          console.error("[sync-engine] failed to fetch new entries", error)
+        },
+      )
     }
   }
 
@@ -293,10 +413,9 @@ class SyncEngine implements Resetable {
       await listActions.upsertMany(collections.lists)
       await subscriptionActions.upsertMany(subscriptions)
       for (const subscription of subscriptions) {
-        addView(summary, subscription.view)
+        addView(summary.invalidateViews, subscription.view)
       }
       summary.refreshUnread = true
-      summary.forceInvalidate = true
       return
     }
 
@@ -315,9 +434,8 @@ class SyncEngine implements Resetable {
           ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)),
         })
         if (next.view !== previousView) {
-          addView(summary, previousView)
-          addView(summary, next.view)
-          summary.forceInvalidate = true
+          addView(summary.invalidateViews, previousView)
+          addView(summary.invalidateViews, next.view)
         }
       }
       return
@@ -329,8 +447,7 @@ class SyncEngine implements Resetable {
       if (current.feedId) {
         await unreadActions.updateById(current.feedId, 0)
       }
-      addView(summary, current.view)
-      summary.forceInvalidate = true
+      addView(summary.invalidateViews, current.view)
     }
   }
 
@@ -366,36 +483,50 @@ class SyncEngine implements Resetable {
         const override = overlays.get(entryReadOverlayKey(entryId))
         return typeof override !== "boolean" || override === data.read
       })
-      if (entryIds.length === 0) return
+      if (entryIds.length > 0) {
+        entryActions.markEntryReadStatusInSession({ entryIds, read: data.read })
+        await EntryService.patchMany({ entry: { read: data.read }, entryIds })
+      }
 
-      entryActions.markEntryReadStatusInSession({ entryIds, read: data.read })
-      await EntryService.patchMany({ entry: { read: data.read }, entryIds })
-      summary.refreshUnread = true
+      // The counters follow the server even when a local transaction keeps an entry's read
+      // state: that transaction is rebased on top of the confirmed counts.
+      if (isCountRecord(data.feeds)) {
+        const sign = data.read ? -1 : 1
+        await unreadActions.applyConfirmedDelta(
+          Object.fromEntries(Object.entries(data.feeds).map(([id, count]) => [id, sign * count])),
+        )
+      } else {
+        summary.refreshUnread = true
+      }
       return
     }
 
     if (action.action === "N") {
       if (!isRecord(action.data)) return
       const data = action.data as unknown as TimelineNewEntriesActionData
+      const id = data.isInbox ? (data.inboxId ?? action.modelId) : (data.feedId ?? action.modelId)
+      if (!id) return
+
+      setFeedUnreadDirty(id)
       if (data.isInbox) {
-        const inboxId = data.inboxId ?? action.modelId
-        if (!inboxId) return
-        setFeedUnreadDirty(inboxId)
-        addView(summary, FeedViewType.Articles)
+        addView(summary.newEntryViews, FeedViewType.Articles)
+      } else {
+        addView(summary.newEntryViews, getSubscriptionById(id)?.view)
+        for (const source of data.from ?? []) {
+          if (source === "feed") continue
+          addView(summary.newEntryViews, getSubscriptionById(source)?.view)
+        }
+      }
+      const loggedAt = Date.parse(action.createdAt)
+      if (Number.isFinite(loggedAt)) {
+        summary.newestEntryAt = Math.max(summary.newestEntryAt, loggedAt)
+      }
+
+      if (typeof data.unread === "number") {
+        await unreadActions.applyConfirmedDelta({ [id]: data.unread })
+      } else {
         summary.refreshUnread = true
-        return
       }
-
-      const feedId = data.feedId ?? action.modelId
-      if (!feedId) return
-
-      setFeedUnreadDirty(feedId)
-      addView(summary, getSubscriptionById(feedId)?.view)
-      for (const source of data.from ?? []) {
-        if (source === "feed") continue
-        addView(summary, getSubscriptionById(source)?.view)
-      }
-      summary.refreshUnread = true
     }
   }
 
@@ -415,9 +546,8 @@ class SyncEngine implements Resetable {
 
       if ("feedIds" in patch) {
         // Membership changed: the list's timeline and unread counts are different now.
-        addView(summary, current.view)
+        addView(summary.invalidateViews, current.view)
         summary.refreshUnread = true
-        summary.forceInvalidate = true
       }
       return
     }
@@ -427,8 +557,7 @@ class SyncEngine implements Resetable {
       if (subscription?.listId) {
         subscriptionActions.removeManyInSession([getSubscriptionStoreId(subscription)])
         await SubscriptionService.delete([getSubscriptionDBId(subscription)])
-        addView(summary, subscription.view)
-        summary.forceInvalidate = true
+        addView(summary.invalidateViews, subscription.view)
       }
       listActions.removeInSession(listId)
       await ListService.deleteList(listId)
@@ -473,8 +602,7 @@ class SyncEngine implements Resetable {
       inboxActions.deleteById(inboxId)
       await InboxService.deleteById(inboxId)
       await unreadActions.updateById(inboxId, 0)
-      addView(summary, FeedViewType.Articles)
-      summary.forceInvalidate = true
+      addView(summary.invalidateViews, FeedViewType.Articles)
     }
   }
 
@@ -487,7 +615,11 @@ class SyncEngine implements Resetable {
     if (data.inboxId) {
       setFeedUnreadDirty(data.inboxId)
     }
-    summary.refreshUnread = true
+    if (typeof data.unread !== "boolean" || !data.inboxId) {
+      summary.refreshUnread = true
+    } else if (data.unread) {
+      await unreadActions.applyConfirmedDelta({ [data.inboxId]: -1 })
+    }
   }
 
   private async setLastSyncId(lastSyncId: number) {
@@ -537,3 +669,4 @@ class SyncEngine implements Resetable {
 }
 
 export const syncEngine = new SyncEngine()
+registerSyncEngine(syncEngine)

@@ -54,9 +54,15 @@ export interface SyncAPI {
 }
 
 export interface TimelineReadActionData {
+  /** Entries whose read state really flipped on the server. */
   entryIds: string[]
   read: boolean
   isInbox?: boolean
+  /**
+   * Flipped rows per feed id or inbox handle. Absent on actions logged by older servers,
+   * which leaves a recount as the only way to learn the unread counters.
+   */
+  feeds?: Record<string, number>
 }
 
 export interface TimelineNewEntriesActionData {
@@ -65,7 +71,10 @@ export interface TimelineNewEntriesActionData {
   /** Set together with `isInbox` for entries delivered to an inbox */
   inboxId?: string
   isInbox?: boolean
+  /** Rows really written to the user's timeline. */
   count: number
+  /** How many of them arrived unread. Absent on actions logged by older servers. */
+  unread?: number
   latestPublishedAt: string
   from: string[]
   entryIds?: string[]
@@ -82,6 +91,8 @@ export interface ListActionData {
 
 export interface InboxEntryActionData {
   inboxId?: string
+  /** Whether the deleted entry was unread. Absent on actions logged by older servers. */
+  unread?: boolean
 }
 
 export interface CollectionActionData {
