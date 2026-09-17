@@ -6,11 +6,14 @@ import { apiContext, syncApiContext } from "../context"
 import { useCollectionStore } from "../modules/collection/store"
 import { useEntryStore } from "../modules/entry/store"
 import type { EntryModel } from "../modules/entry/types"
+import { useInboxStore } from "../modules/inbox/store"
+import { useListStore } from "../modules/list/store"
 import { useSubscriptionStore } from "../modules/subscription/store"
 import { useUnreadStore } from "../modules/unread/store"
 import { useUserStore } from "../modules/user/store"
 import type { FollowAPI } from "../types"
 import { syncEngine } from "./sync-engine"
+import { isSyncEngineActive } from "./sync-status"
 import { transactionQueue } from "./transaction-queue"
 import type { SyncAction, SyncAPI } from "./types"
 
@@ -23,6 +26,9 @@ const {
   subscriptionDeleteMock,
   collectionUpsertManyMock,
   collectionDeleteManyMock,
+  listDeleteMock,
+  inboxDeleteByIdMock,
+  entryDeleteManyMock,
   unreadUpsertManyMock,
   invalidateEntriesQueryMock,
   setFeedUnreadDirtyMock,
@@ -39,6 +45,9 @@ const {
     subscriptionDeleteMock: vi.fn(async () => {}),
     collectionUpsertManyMock: vi.fn(async () => {}),
     collectionDeleteManyMock: vi.fn(async () => {}),
+    listDeleteMock: vi.fn(async () => {}),
+    inboxDeleteByIdMock: vi.fn(async () => {}),
+    entryDeleteManyMock: vi.fn(async () => {}),
     unreadUpsertManyMock: vi.fn(async () => {}),
     invalidateEntriesQueryMock: vi.fn(),
     setFeedUnreadDirtyMock: vi.fn(),
@@ -68,6 +77,7 @@ vi.mock("@follow/database/services/entry", () => ({
     patchMany: entryPatchManyMock,
     getEntryMany: vi.fn(async () => []),
     upsertMany: vi.fn(async () => {}),
+    deleteMany: entryDeleteManyMock,
   },
 }))
 vi.mock("@follow/database/services/subscription", () => ({
@@ -89,12 +99,14 @@ vi.mock("@follow/database/services/feed", () => ({
 vi.mock("@follow/database/services/list", () => ({
   ListService: {
     upsertMany: vi.fn(async () => {}),
+    deleteList: listDeleteMock,
     reset: vi.fn(async () => {}),
   },
 }))
 vi.mock("@follow/database/services/inbox", () => ({
   InboxService: {
     upsertMany: vi.fn(async () => {}),
+    deleteById: inboxDeleteByIdMock,
     reset: vi.fn(async () => {}),
   },
 }))
@@ -214,6 +226,8 @@ describe("syncEngine", () => {
       },
     }))
     useCollectionStore.setState({ collections: {} })
+    useListStore.setState({ lists: {}, listIds: [] })
+    useInboxStore.setState({ inboxes: {} })
     useUnreadStore.setState({ data: {} })
 
     subscriptionsGetMock.mockResolvedValue({ data: [] })
@@ -241,6 +255,175 @@ describe("syncEngine", () => {
     expect(deltaMock).not.toHaveBeenCalled()
     expect(syncEngine.getLastSyncId()).toBe(42)
     expect(syncMetaStore.get("lastSyncId")).toBe("42")
+    expect(isSyncEngineActive()).toBe(true)
+  })
+
+  it("applies list membership changes and list deletion", async () => {
+    syncMetaStore.set("lastSyncId", "40")
+    const { subscriptionActions } = await import("../modules/subscription/store")
+    const { listActions } = await import("../modules/list/store")
+    listActions.upsertManyInSession([
+      {
+        id: "list-1",
+        title: "Reading",
+        userId: "owner-1",
+        ownerUserId: "owner-1",
+        description: null,
+        image: null,
+        view: FeedViewType.Articles,
+        feedIds: ["feed-1"],
+        fee: 0,
+        subscriptionCount: null,
+        purchaseAmount: null,
+        type: "list",
+      },
+    ])
+    subscriptionActions.upsertManyInSession([
+      {
+        feedId: null,
+        listId: "list-1",
+        inboxId: null,
+        userId: "user-1",
+        view: FeedViewType.Articles,
+        isPrivate: false,
+        hideFromTimeline: null,
+        title: null,
+        category: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        type: "list",
+      },
+    ])
+    deltaMock.mockResolvedValueOnce(
+      deltaResponse([
+        createAction({
+          id: 41,
+          model: "list",
+          modelId: "list-1",
+          action: "U",
+          data: { feedIds: ["feed-1", "feed-2"], title: "Reading list" },
+        }),
+      ]),
+    )
+
+    await syncEngine.pull("interval")
+
+    expect(useListStore.getState().lists["list-1"]?.feedIds).toEqual(["feed-1", "feed-2"])
+    expect(useListStore.getState().lists["list-1"]?.title).toBe("Reading list")
+    expect(readsGetMock).toHaveBeenCalledTimes(1)
+    expect(invalidateEntriesQueryMock).toHaveBeenCalledTimes(1)
+
+    deltaMock.mockResolvedValueOnce(
+      deltaResponse([createAction({ id: 42, model: "list", modelId: "list-1", action: "D" })]),
+    )
+    await syncEngine.pull("interval")
+
+    expect(useListStore.getState().lists["list-1"]).toBeUndefined()
+    expect(useSubscriptionStore.getState().data["list-1"]).toBeUndefined()
+    expect(listDeleteMock).toHaveBeenCalledWith("list-1")
+    expect(subscriptionDeleteMock).toHaveBeenCalledWith(["list/list-1"])
+  })
+
+  it("applies the inbox lifecycle, new inbox entries and inbox entry deletions", async () => {
+    syncMetaStore.set("lastSyncId", "50")
+    deltaMock.mockResolvedValueOnce(
+      deltaResponse([
+        createAction({
+          id: 51,
+          model: "inbox",
+          modelId: "news",
+          action: "I",
+          data: {
+            inboxes: { type: "inbox", id: "news", secret: "s3cret", title: "News" },
+            feedId: "inbox-news",
+            title: "News",
+            userId: "user-1",
+            inboxId: "news",
+            view: 0,
+            category: null,
+            isPrivate: false,
+            hideFromTimeline: null,
+            createdAt: "",
+          },
+        }),
+        createAction({
+          id: 52,
+          model: "inbox",
+          modelId: "news",
+          action: "U",
+          data: { title: "Daily" },
+        }),
+        createAction({
+          id: 53,
+          model: "timeline",
+          modelId: "news",
+          action: "N",
+          data: {
+            inboxId: "news",
+            isInbox: true,
+            count: 1,
+            entryIds: ["mail-1"],
+            latestPublishedAt: "2026-09-17T00:00:00.000Z",
+            from: [],
+          },
+        }),
+      ]),
+    )
+
+    await syncEngine.pull("interval")
+
+    expect(useInboxStore.getState().inboxes.news).toMatchObject({
+      id: "news",
+      title: "Daily",
+      secret: "s3cret",
+    })
+    expect(useSubscriptionStore.getState().data["inbox/news"]).toMatchObject({
+      inboxId: "news",
+      type: "inbox",
+      title: "Daily",
+    })
+    expect(setFeedUnreadDirtyMock).toHaveBeenCalledWith("news")
+    expect(readsGetMock).toHaveBeenCalledTimes(1)
+
+    useEntryStore.setState((state) => ({
+      ...state,
+      data: { "mail-1": { ...createEntry("mail-1", ""), feedId: null, inboxHandle: "news" } },
+      entryIdSet: new Set(["mail-1"]),
+      entryIdByInbox: { news: new Set(["mail-1"]) },
+    }))
+    deltaMock.mockResolvedValueOnce(
+      deltaResponse([
+        createAction({
+          id: 54,
+          model: "inbox_entry",
+          modelId: "mail-1",
+          action: "D",
+          data: { inboxId: "news" },
+        }),
+        createAction({ id: 55, model: "inbox", modelId: "news", action: "D" }),
+      ]),
+    )
+    await syncEngine.pull("interval")
+
+    expect(useEntryStore.getState().data["mail-1"]).toBeUndefined()
+    expect(entryDeleteManyMock).toHaveBeenCalledWith(["mail-1"])
+    expect(useInboxStore.getState().inboxes.news).toBeUndefined()
+    expect(useSubscriptionStore.getState().data["inbox/news"]).toBeUndefined()
+    expect(inboxDeleteByIdMock).toHaveBeenCalledWith("news")
+  })
+
+  it("tells the transaction queue how far the change log was applied", async () => {
+    syncMetaStore.set("lastSyncId", "60")
+    const markSyncedSpy = vi.spyOn(transactionQueue, "markSynced")
+    deltaMock.mockResolvedValueOnce(
+      deltaResponse([
+        createAction({ id: 61, model: "collection", modelId: "entry-9", action: "D" }),
+      ]),
+    )
+
+    await syncEngine.pull("interval")
+
+    expect(markSyncedSpy).toHaveBeenCalledWith(61)
+    markSyncedSpy.mockRestore()
   })
 
   it("applies subscription updates and deletes from the delta", async () => {
@@ -418,6 +601,7 @@ describe("syncEngine", () => {
 
     expect(stateMock).toHaveBeenCalledTimes(1)
     expect(syncEngine.isAvailable()).toBe(false)
+    expect(isSyncEngineActive()).toBe(false)
     expect(subscriptionsGetMock).not.toHaveBeenCalled()
   })
 })

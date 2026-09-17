@@ -2,6 +2,7 @@ import type { FeedViewType } from "@follow/constants"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import { useCallback, useEffect } from "react"
 
+import { isSyncEngineActive } from "../../sync/sync-status"
 import { getEntry } from "../entry/getter"
 import { useListFeedIds } from "../list/hooks"
 import { useSubscriptionIdsByView } from "../subscription/hooks"
@@ -19,8 +20,14 @@ export const usePrefetchUnread = () => {
   })
 }
 
+/**
+ * Fallback for servers without the sync endpoints: refetch the unread counts when the
+ * entries on screen disagree with them. The sync engine keeps the counts fresh otherwise.
+ */
 export const useSyncUnreadWhenUnMatch = (entryIds: string[]) => {
   useEffect(() => {
+    if (isSyncEngineActive()) return
+
     const entries = entryIds.map((id) => getEntry(id))
     const unreadCountMap = entries.reduce(
       (acc, entry) => {

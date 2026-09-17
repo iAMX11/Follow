@@ -6,7 +6,11 @@ import { api } from "../../context"
 import type { Hydratable, Resetable } from "../../lib/base"
 import { createTransaction, createZustandStore } from "../../lib/helper"
 import { collectionOverlayKey, isCollectionOverlayKey } from "../../sync/overlay-keys"
-import { defineTransactionKind, transactionQueue } from "../../sync/transaction-queue"
+import {
+  defineTransactionKind,
+  readLastSyncId,
+  transactionQueue,
+} from "../../sync/transaction-queue"
 import { getEntry } from "../entry/getter"
 import { invalidateEntriesQuery } from "../entry/hooks"
 
@@ -35,7 +39,11 @@ interface UnstarPayload {
   snapshot: CollectionSchema | null
 }
 
-export const starEntryTransaction = defineTransactionKind<CollectionSchema, void>({
+interface SyncedResult {
+  lastSyncId?: number
+}
+
+export const starEntryTransaction = defineTransactionKind<CollectionSchema, SyncedResult>({
   kind: "collections.star",
   apply(payload) {
     collectionActions.upsertManyInSession([payload])
@@ -45,15 +53,17 @@ export const starEntryTransaction = defineTransactionKind<CollectionSchema, void
   },
   async execute(payloads) {
     const payload = payloads[0]!
-    await api().collections.post({ entryId: payload.entryId, view: payload.view })
+    const res = await api().collections.post({ entryId: payload.entryId, view: payload.view })
+    return { lastSyncId: readLastSyncId(res) }
   },
+  syncIdOf: (result) => result.lastSyncId,
   async persist(payloads) {
     await CollectionService.upsertMany(payloads)
   },
   overlays: (payload) => [{ key: collectionOverlayKey(payload.entryId), value: payload }],
 })
 
-export const unstarEntryTransaction = defineTransactionKind<UnstarPayload, void>({
+export const unstarEntryTransaction = defineTransactionKind<UnstarPayload, SyncedResult>({
   kind: "collections.unstar",
   apply(payload) {
     collectionActions.deleteInSession(payload.entryId)
@@ -64,8 +74,10 @@ export const unstarEntryTransaction = defineTransactionKind<UnstarPayload, void>
     }
   },
   async execute(payloads) {
-    await api().collections.delete({ entryId: payloads[0]!.entryId })
+    const res = await api().collections.delete({ entryId: payloads[0]!.entryId })
+    return { lastSyncId: readLastSyncId(res) }
   },
+  syncIdOf: (result) => result.lastSyncId,
   async persist(payloads) {
     await CollectionService.deleteMany(payloads.map((payload) => payload.entryId))
   },

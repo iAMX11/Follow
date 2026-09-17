@@ -1,5 +1,7 @@
 import { FeedViewType } from "@follow/constants"
 import { EntryService } from "@follow/database/services/entry"
+import { InboxService } from "@follow/database/services/inbox"
+import { ListService } from "@follow/database/services/list"
 import { SubscriptionService } from "@follow/database/services/subscription"
 import { SyncMetaService } from "@follow/database/services/sync-meta"
 import { FollowAPIError } from "@follow-app/client-sdk"
@@ -11,18 +13,27 @@ import { invalidateEntriesQuery } from "../modules/entry/hooks"
 import { entryActions } from "../modules/entry/store"
 import { setFeedUnreadDirty } from "../modules/feed/hooks"
 import { feedActions } from "../modules/feed/store"
+import { inboxActions, useInboxStore } from "../modules/inbox/store"
+import { getListById } from "../modules/list/getters"
 import { listActions } from "../modules/list/store"
 import { getSubscriptionById } from "../modules/subscription/getter"
 import { subscriptionActions, subscriptionSyncService } from "../modules/subscription/store"
 import type { SubscriptionModel } from "../modules/subscription/types"
-import { getSubscriptionDBId, getSubscriptionStoreId } from "../modules/subscription/utils"
+import {
+  getInboxStoreId,
+  getSubscriptionDBId,
+  getSubscriptionStoreId,
+} from "../modules/subscription/utils"
 import { unreadActions, unreadSyncService } from "../modules/unread/store"
 import { whoami } from "../modules/user/getters"
 import { apiMorph } from "../morph/api"
 import { entryReadOverlayKey } from "./overlay-keys"
+import { setSyncEngineActive } from "./sync-status"
 import { isNavigatorOnline, transactionQueue } from "./transaction-queue"
 import type {
   CollectionActionData,
+  InboxEntryActionData,
+  ListActionData,
   SyncAction,
   TimelineNewEntriesActionData,
   TimelineReadActionData,
@@ -101,6 +112,7 @@ class SyncEngine implements Resetable {
       const stored = await SyncMetaService.get(LAST_SYNC_ID_KEY)
       const parsed = stored === null ? Number.NaN : Number(stored)
       this.lastSyncId = Number.isFinite(parsed) ? parsed : null
+      setSyncEngineActive(this.lastSyncId !== null)
     } catch (error) {
       console.error("[sync-engine] failed to load the sync cursor", error)
     }
@@ -166,6 +178,7 @@ class SyncEngine implements Resetable {
     this.lastSyncId = null
     this.loaded = false
     this.unavailable = false
+    setSyncEngineActive(false)
   }
 
   private async runPull(reason: SyncPullReason) {
@@ -248,6 +261,18 @@ class SyncEngine implements Resetable {
       }
       case "timeline": {
         await this.applyTimelineAction(action, summary)
+        return
+      }
+      case "list": {
+        await this.applyListAction(action, summary)
+        return
+      }
+      case "inbox": {
+        await this.applyInboxAction(action, summary)
+        return
+      }
+      case "inbox_entry": {
+        await this.applyInboxEntryAction(action, summary)
         return
       }
       default: {
@@ -352,6 +377,15 @@ class SyncEngine implements Resetable {
     if (action.action === "N") {
       if (!isRecord(action.data)) return
       const data = action.data as unknown as TimelineNewEntriesActionData
+      if (data.isInbox) {
+        const inboxId = data.inboxId ?? action.modelId
+        if (!inboxId) return
+        setFeedUnreadDirty(inboxId)
+        addView(summary, FeedViewType.Articles)
+        summary.refreshUnread = true
+        return
+      }
+
       const feedId = data.feedId ?? action.modelId
       if (!feedId) return
 
@@ -365,8 +399,102 @@ class SyncEngine implements Resetable {
     }
   }
 
+  private async applyListAction(action: SyncAction, summary: PullSummary) {
+    const listId = action.modelId
+    if (!listId) return
+
+    if (action.action === "U") {
+      if (!isRecord(action.data)) return
+      const current = getListById(listId)
+      if (!current) return
+
+      const patch = Object.fromEntries(
+        Object.entries(action.data as ListActionData).filter(([, value]) => value !== undefined),
+      ) as Partial<typeof current>
+      await listActions.upsertMany([{ ...current, ...patch }])
+
+      if ("feedIds" in patch) {
+        // Membership changed: the list's timeline and unread counts are different now.
+        addView(summary, current.view)
+        summary.refreshUnread = true
+        summary.forceInvalidate = true
+      }
+      return
+    }
+
+    if (action.action === "D") {
+      const subscription = getSubscriptionById(listId)
+      if (subscription?.listId) {
+        subscriptionActions.removeManyInSession([getSubscriptionStoreId(subscription)])
+        await SubscriptionService.delete([getSubscriptionDBId(subscription)])
+        addView(summary, subscription.view)
+        summary.forceInvalidate = true
+      }
+      listActions.removeInSession(listId)
+      await ListService.deleteList(listId)
+    }
+  }
+
+  private async applyInboxAction(action: SyncAction, summary: PullSummary) {
+    const inboxId = action.modelId
+    if (!inboxId) return
+
+    if (action.action === "I") {
+      if (!isRecord(action.data) || !("inboxes" in action.data)) return
+      const { subscriptions, collections } = apiMorph.toSubscription([
+        action.data as unknown as SubscriptionSyncPayload,
+      ])
+      await inboxActions.upsertMany(collections.inboxes)
+      await subscriptionActions.upsertMany(subscriptions)
+      return
+    }
+
+    if (action.action === "U") {
+      if (!isRecord(action.data)) return
+      const current = useInboxStore.getState().inboxes[inboxId]
+      if (!current) return
+      const title = typeof action.data.title === "string" ? action.data.title : null
+      await inboxActions.upsertMany([{ id: current.id, secret: current.secret, title }])
+
+      const subscription = getSubscriptionById(getInboxStoreId(inboxId))
+      if (subscription) {
+        subscriptionActions.patchInSession(getSubscriptionStoreId(subscription), { title })
+        await SubscriptionService.patch({ id: getSubscriptionDBId(subscription), title })
+      }
+      return
+    }
+
+    if (action.action === "D") {
+      const subscription = getSubscriptionById(getInboxStoreId(inboxId))
+      if (subscription) {
+        subscriptionActions.removeManyInSession([getSubscriptionStoreId(subscription)])
+        await SubscriptionService.delete([getSubscriptionDBId(subscription)])
+      }
+      inboxActions.deleteById(inboxId)
+      await InboxService.deleteById(inboxId)
+      await unreadActions.updateById(inboxId, 0)
+      addView(summary, FeedViewType.Articles)
+      summary.forceInvalidate = true
+    }
+  }
+
+  private async applyInboxEntryAction(action: SyncAction, summary: PullSummary) {
+    if (action.action !== "D" || !action.modelId) return
+
+    const data = isRecord(action.data) ? (action.data as InboxEntryActionData) : {}
+    entryActions.deleteInboxEntryById(action.modelId)
+    await EntryService.deleteMany([action.modelId])
+    if (data.inboxId) {
+      setFeedUnreadDirty(data.inboxId)
+    }
+    summary.refreshUnread = true
+  }
+
   private async setLastSyncId(lastSyncId: number) {
     this.lastSyncId = lastSyncId
+    setSyncEngineActive(true)
+    // Everything up to this id is reflected in what the server returns from now on.
+    transactionQueue.markSynced(lastSyncId)
     try {
       await SyncMetaService.set(LAST_SYNC_ID_KEY, String(lastSyncId))
     } catch (error) {
@@ -377,6 +505,7 @@ class SyncEngine implements Resetable {
   private markUnavailableIfMissing(error: unknown) {
     if (error instanceof FollowAPIError && error.status === 404) {
       this.unavailable = true
+      setSyncEngineActive(false)
       console.info("[sync-engine] the server has no sync endpoints; keeping full refetch behaviour")
       return true
     }

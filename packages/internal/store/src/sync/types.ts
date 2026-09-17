@@ -3,7 +3,14 @@
  * SDK, so the apps hand `followApi.sync` to the store through `syncApiContext`.
  */
 
-export type SyncActionModelName = "subscription" | "list_subscription" | "collection" | "timeline"
+export type SyncActionModelName =
+  | "subscription"
+  | "list_subscription"
+  | "collection"
+  | "timeline"
+  | "list"
+  | "inbox"
+  | "inbox_entry"
 
 export type SyncActionType = "I" | "U" | "D" | "N"
 
@@ -53,11 +60,28 @@ export interface TimelineReadActionData {
 }
 
 export interface TimelineNewEntriesActionData {
-  feedId: string
+  /** Set for entries delivered by a feed or a list */
+  feedId?: string
+  /** Set together with `isInbox` for entries delivered to an inbox */
+  inboxId?: string
+  isInbox?: boolean
   count: number
   latestPublishedAt: string
   from: string[]
   entryIds?: string[]
+}
+
+export interface ListActionData {
+  title?: string
+  description?: string | null
+  image?: string | null
+  view?: number
+  fee?: number
+  feedIds?: string[]
+}
+
+export interface InboxEntryActionData {
+  inboxId?: string
 }
 
 export interface CollectionActionData {

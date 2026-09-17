@@ -255,6 +255,25 @@ describe("transactionQueue", () => {
     expect(transactionQueue.getOverlays().get("counter:a")).toBeUndefined()
   })
 
+  it("releases overlays once the sync engine applied the transaction's sync id", async () => {
+    const kind = createCounterKind({
+      execute: vi.fn(async () => ({ lastSyncId: 42 })),
+      syncIdOf: (result) => (result as { lastSyncId?: number }).lastSyncId,
+      ackGraceMs: 60_000,
+    })
+
+    await transactionQueue.enqueue(kind, { key: "a", delta: 1 })
+    await vi.advanceTimersByTimeAsync(100)
+    await transactionQueue.whenIdle()
+    expect(transactionQueue.getOverlays().get("counter:a")).toBe(1)
+
+    transactionQueue.markSynced(41)
+    expect(transactionQueue.getOverlays().get("counter:a")).toBe(1)
+
+    transactionQueue.markSynced(42)
+    expect(transactionQueue.getOverlays().get("counter:a")).toBeUndefined()
+  })
+
   it("rebases unread counts with pending transactions only", async () => {
     const execute = vi.fn(() => new Promise<void>(() => {}))
     const kind = createCounterKind({ execute })

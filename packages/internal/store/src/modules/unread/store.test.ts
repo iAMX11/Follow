@@ -375,6 +375,29 @@ describe("unreadSyncService", () => {
     expect(useEntryStore.getState().data.entry1?.read).toBe(false)
   })
 
+  it("stops protecting a read mark once the sync engine passed its sync id", async () => {
+    const entries = {
+      entry1: createEntry("entry1", "feed1"),
+    }
+    useEntryStore.setState((state) => ({
+      ...state,
+      data: entries,
+      entryIdSet: new Set(Object.keys(entries)),
+    }))
+    useUnreadStore.setState({ data: { feed1: 1 } })
+    markAsReadMock.mockResolvedValue({ code: 0, lastSyncId: 12 })
+
+    await unreadSyncService.markEntriesAsRead(["entry1"])
+    await flushQueue()
+
+    entryActions.upsertManyInSession([createEntry("entry1", "feed1")])
+    expect(useEntryStore.getState().data.entry1?.read).toBe(true)
+
+    transactionQueue.markSynced(12)
+    entryActions.upsertManyInSession([createEntry("entry1", "feed1")])
+    expect(useEntryStore.getState().data.entry1?.read).toBe(false)
+  })
+
   it("keeps a pending unread mark when a stale fetch says the entry is read", async () => {
     const entries = {
       entry1: createEntry("entry1", "feed1", true),

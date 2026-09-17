@@ -38,9 +38,14 @@ export interface TransactionKind<P, R = unknown> {
   /** Re-apply the transaction's effect on unread counters that were just replaced by a server snapshot. */
   rebaseUnread?: (payload: P, counts: Record<string, number>) => void
   /**
-   * How long an acknowledged transaction keeps its overlays.
-   * Covers the read-replica lag of the server, so a fetch issued right after the ack
-   * cannot revert the change. Becomes unnecessary once the server returns a sync id.
+   * The sync id the server assigned to the batch. With it, overlays are released as soon as
+   * the sync engine has applied that id: the delta feed and the snapshot endpoints read from
+   * the same replicas, so a snapshot fetched afterwards already contains the change.
+   */
+  syncIdOf?: (result: R) => number | undefined
+  /**
+   * Upper bound for how long an acknowledged transaction keeps its overlays. It is the only
+   * release condition when the server returned no sync id or the sync engine is unavailable.
    */
   ackGraceMs?: number
 }
@@ -75,6 +80,7 @@ interface QueuedTransaction<P = unknown> extends TransactionRecord<P> {
 interface AcknowledgedTransaction {
   record: QueuedTransaction
   expiresAt: number
+  syncId?: number
 }
 
 type ErrorDecision = "retry" | "pause" | "fail"
@@ -88,6 +94,12 @@ const DEFAULT_ACK_GRACE_MS = 30_000
 const RETRYABLE_STATUS = new Set([408, 425, 429])
 
 const noop = () => {}
+
+/** Mutation responses carry the highest sync id they produced. */
+export const readLastSyncId = (response: unknown): number | undefined => {
+  const value = (response as { lastSyncId?: unknown } | null | undefined)?.lastSyncId
+  return typeof value === "number" ? value : undefined
+}
 
 const createTransactionId = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
@@ -126,6 +138,7 @@ class TransactionQueue {
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private attempts = 0
   private paused = false
+  private syncedThrough = 0
   private version = 0
   private overlayCache: { version: number; overlays: Map<string, unknown> } | null = null
   private idleWaiters: Array<() => void> = []
@@ -282,6 +295,16 @@ class TransactionQueue {
     return this.queued.length
   }
 
+  /**
+   * The sync engine applied the change log up to `lastSyncId`. Acknowledged transactions the
+   * server numbered at or below it are settled and stop overriding server data.
+   */
+  markSynced(lastSyncId: number) {
+    if (lastSyncId <= this.syncedThrough) return
+    this.syncedThrough = lastSyncId
+    this.pruneAcknowledged()
+  }
+
   onFailure(listener: TransactionFailureListener) {
     this.failureListeners.add(listener)
     return () => {
@@ -317,6 +340,7 @@ class TransactionQueue {
     this.acknowledged = []
     this.attempts = 0
     this.paused = false
+    this.syncedThrough = 0
     this.touch()
     this.notifyIdleWaiters()
   }
@@ -393,8 +417,9 @@ class TransactionQueue {
 
     if (definition.overlays) {
       const expiresAt = Date.now() + (definition.ackGraceMs ?? DEFAULT_ACK_GRACE_MS)
+      const syncId = definition.syncIdOf?.(result)
       for (const record of batch) {
-        this.acknowledged.push({ record, expiresAt })
+        this.acknowledged.push({ record, expiresAt, syncId })
       }
     }
     this.touch()
@@ -472,7 +497,10 @@ class TransactionQueue {
   private pruneAcknowledged() {
     if (this.acknowledged.length === 0) return
     const now = Date.now()
-    const next = this.acknowledged.filter((item) => item.expiresAt > now)
+    const next = this.acknowledged.filter(
+      (item) =>
+        item.expiresAt > now && (item.syncId === undefined || item.syncId > this.syncedThrough),
+    )
     if (next.length !== this.acknowledged.length) {
       this.acknowledged = next
       this.touch()

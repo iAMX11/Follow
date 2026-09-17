@@ -205,20 +205,28 @@ the retained log gets `reset: true` and the client bootstraps again.
 
 Action semantics:
 
-| model               | action          | data                                                              | produced by                                                              |
-| ------------------- | --------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `subscription`      | `I`             | the subscription row plus `feeds` (the feed row)                  | `POST /subscriptions`                                                    |
-| `subscription`      | `U`             | the patched fields                                                | `PATCH /subscriptions`, `PATCH /subscriptions/batch`, `/categories`      |
-| `subscription`      | `D`             | none                                                              | `DELETE /subscriptions`, `DELETE /categories` with `deleteSubscriptions` |
-| `list_subscription` | `I` / `U` / `D` | the list subscription row plus `lists` (with `owner.id`)          | same routes, list branch                                                 |
-| `collection`        | `I` / `D`       | `{ entryId, feedId, view, createdAt }`                            | `/collections`, auto-star rules in the crawler                           |
-| `timeline`          | `U`             | `{ entryIds, read, isInbox }`, 500 ids per row                    | `POST /reads`, `DELETE /reads`, `POST /reads/all`                        |
-| `timeline`          | `N`             | `{ feedId, count, latestPublishedAt, from, entryIds (first 50) }` | crawler fan-out, one row per (user, feed) per refresh                    |
+| model               | action          | data                                                              | produced by                                                                                                         |
+| ------------------- | --------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `subscription`      | `I`             | the subscription row plus `feeds` (the feed row)                  | `POST /subscriptions`                                                                                               |
+| `subscription`      | `U`             | the patched fields                                                | `PATCH /subscriptions`, `PATCH /subscriptions/batch`, `/categories`                                                 |
+| `subscription`      | `D`             | none                                                              | `DELETE /subscriptions`, `DELETE /categories` with `deleteSubscriptions`                                            |
+| `list_subscription` | `I` / `U` / `D` | the list subscription row plus `lists` (with `owner.id`)          | same routes, list branch; `POST /lists` for the owner; `U { view }` for every subscriber when the list view changes |
+| `collection`        | `I` / `D`       | `{ entryId, feedId, view, createdAt }`                            | `/collections`, auto-star rules in the crawler                                                                      |
+| `timeline`          | `U`             | `{ entryIds, read, isInbox }`, 500 ids per row                    | `POST /reads`, `DELETE /reads`, `POST /reads/all`                                                                   |
+| `timeline`          | `N`             | `{ feedId, count, latestPublishedAt, from, entryIds (first 50) }` | crawler fan-out, one row per (user, feed) per refresh                                                               |
+| `timeline`          | `N`             | `{ inboxId, isInbox: true, count, entryIds, latestPublishedAt }`  | new inbox entry from `/inboxes/email` or `/inboxes/webhook`                                                         |
+| `list`              | `U`             | the patched fields, or `{ feedIds }` when membership changed      | `PATCH /lists`, `POST /lists/feeds`, `DELETE /lists/feeds`; sent to the owner and every subscriber                  |
+| `list`              | `D`             | none                                                              | `DELETE /lists`; sent to the owner and every subscriber, who also drop their subscription                           |
+| `inbox`             | `I` / `U` / `D` | the inbox in `GET /subscriptions` shape, `{ title }`, none        | `/inboxes`                                                                                                          |
+| `inbox_entry`       | `D`             | `{ inboxId }`                                                     | `DELETE /entries/inbox`                                                                                             |
 
 `N` ("new entries arrived") is the coalesced form of Linear's `I` for timeline rows. The
 crawler writes it after its fan-out transaction commits, in one statement for all
 subscribers, so the log never slows the hot path and a lost hint only costs a later
 refresh. Entries themselves keep coming through the paginated `/entries` endpoint.
+
+List and inbox writes are fan-out hints recorded after the primary change committed; they
+go through `recordSyncActionsSafely`, so a failed log write never fails the request.
 
 A subscription delete without an explicit type removes both the feed and the list
 subscription with that id on the server, so it logs one `D` per model; the client ignores
@@ -287,7 +295,17 @@ read first. Anything written between the two calls is replayed by the next delta
   applies each action: subscription `I`/`U`/`D` update the subscription, feed and list
   stores and SQLite; collection `I`/`D` update the collection store; timeline `U` flips the
   read flag of local entries, skipping entries with a pending local mark (the transaction
-  queue's overlay wins); timeline `N` marks the feed dirty.
+  queue's overlay wins); timeline `N` marks the feed or inbox dirty; `list` `U`/`D` patch
+  or remove the list (and its subscription), refreshing the list's timeline when membership
+  changed; `inbox` `I`/`U`/`D` and `inbox_entry` `D` keep inboxes and their entries in step.
+- After every cursor advance the engine calls `transactionQueue.markSynced(lastSyncId)`.
+  Acknowledged transactions carry the `lastSyncId` their mutation returned and release
+  their overlays as soon as the engine has applied that id. The 30 s window only remains
+  as the upper bound for responses without a sync id or a server without `/sync`.
+- `sync/sync-status.ts` exposes whether the engine is active. While it is,
+  `useSyncUnreadWhenUnMatch` stands down and the desktop `InvalidateQueryProvider` skips
+  the `entries`, `subscription` and `unread` queries, because the engine pulls on every
+  return to the app and refetches only the entry lists that changed.
 - After a pull that touched timelines or subscriptions the engine refreshes the unread
   counts once through `/reads`, which the transaction queue rebases. Structural changes and
   pulls triggered by launch or foreground also invalidate the affected entry lists.
@@ -300,11 +318,10 @@ read first. Anything written between the two calls is replayed by the next delta
 
 ### Still to do
 
-- Remove `useSyncUnreadWhenUnMatch` and the 10-minute `InvalidateQueryProvider` sweep once
-  the delta path has proven itself in production.
-- Use the `lastSyncId` returned by mutations to settle transactions exactly instead of
-  the 30 s acknowledgement grace window.
-- List membership changes (`/lists/feeds`) and inbox changes are not logged yet.
+- Delete `useSyncUnreadWhenUnMatch`, the `feedUnreadDirty` atoms and the sync-managed part of
+  `InvalidateQueryProvider` outright once every deployed server exposes `/sync`. Today they
+  are the fallback for servers without it and are disabled while the engine is active.
+- Phase 3 below, so other devices learn about a change without waiting for their next pull.
 
 ## Phase 3: push channel
 

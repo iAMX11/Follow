@@ -9,7 +9,11 @@ import { api } from "../../context"
 import type { Hydratable, Resetable } from "../../lib/base"
 import { createTransaction, createZustandStore } from "../../lib/helper"
 import { entryReadOverlayKey } from "../../sync/overlay-keys"
-import { defineTransactionKind, transactionQueue } from "../../sync/transaction-queue"
+import {
+  defineTransactionKind,
+  readLastSyncId,
+  transactionQueue,
+} from "../../sync/transaction-queue"
 import { getEntry } from "../entry/getter"
 import { entryActions } from "../entry/store"
 import { setFeedUnreadDirty } from "../feed/hooks"
@@ -101,7 +105,14 @@ interface MarkAllReadPayload {
   unreadBefore: UnreadStoreModel
 }
 
-export const markEntriesReadTransaction = defineTransactionKind<MarkEntriesReadPayload, void>({
+interface SyncedResult {
+  lastSyncId?: number
+}
+
+export const markEntriesReadTransaction = defineTransactionKind<
+  MarkEntriesReadPayload,
+  SyncedResult
+>({
   kind: "reads.mark-entries-read",
   batchKey: (payload) => (payload.isInbox ? "inbox" : "feed"),
   apply(payload) {
@@ -119,11 +130,13 @@ export const markEntriesReadTransaction = defineTransactionKind<MarkEntriesReadP
     unreadActions.changeBatchInSession(countEntriesById(affected), "increment")
   },
   async execute(payloads) {
-    await api().reads.markAsRead({
+    const res = await api().reads.markAsRead({
       entryIds: mergeEntryIds(payloads),
       isInbox: payloads[0]!.isInbox,
     })
+    return { lastSyncId: readLastSyncId(res) }
   },
+  syncIdOf: (result) => result.lastSyncId,
   async persist(payloads) {
     await EntryService.patchMany({
       entry: { read: true },
@@ -138,7 +151,10 @@ export const markEntriesReadTransaction = defineTransactionKind<MarkEntriesReadP
   },
 })
 
-export const markEntryUnreadTransaction = defineTransactionKind<MarkEntryUnreadPayload, void>({
+export const markEntryUnreadTransaction = defineTransactionKind<
+  MarkEntryUnreadPayload,
+  SyncedResult
+>({
   kind: "reads.mark-entry-unread",
   apply(payload) {
     const affected = entryActions.markEntryReadStatusInSession({
@@ -160,8 +176,13 @@ export const markEntryUnreadTransaction = defineTransactionKind<MarkEntryUnreadP
   },
   async execute(payloads) {
     const payload = payloads[0]!
-    await api().reads.markAsUnread({ entryId: payload.entryId, isInbox: payload.isInbox })
+    const res = await api().reads.markAsUnread({
+      entryId: payload.entryId,
+      isInbox: payload.isInbox,
+    })
+    return { lastSyncId: readLastSyncId(res) }
   },
+  syncIdOf: (result) => result.lastSyncId,
   async persist(payloads) {
     const payload = payloads[0]!
     await EntryService.patchMany({
@@ -178,7 +199,7 @@ export const markEntryUnreadTransaction = defineTransactionKind<MarkEntryUnreadP
 
 export const markAllReadTransaction = defineTransactionKind<
   MarkAllReadPayload,
-  Record<string, number>
+  SyncedResult & { read: Record<string, number> }
 >({
   kind: "reads.mark-all-read",
   apply(payload) {
@@ -204,9 +225,10 @@ export const markAllReadTransaction = defineTransactionKind<
   },
   async execute(payloads) {
     const res = await api().reads.markAllAsRead(payloads[0]!.args)
-    return res.data.read
+    return { read: res.data.read, lastSyncId: readLastSyncId(res) }
   },
-  async persist(payloads, read) {
+  syncIdOf: (result) => result.lastSyncId,
+  async persist(payloads, { read }) {
     const payload = payloads[0]!
     if (payload.time) {
       const finalUnreadList = Array.from(new Set([...payload.ids, ...Object.keys(read)])).map(
