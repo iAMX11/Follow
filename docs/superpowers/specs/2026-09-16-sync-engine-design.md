@@ -205,20 +205,23 @@ the retained log gets `reset: true` and the client bootstraps again.
 
 Action semantics:
 
-| model               | action          | data                                                                                                                                          | produced by                                                                                                         |
-| ------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `subscription`      | `I`             | the subscription row plus `feeds` (the feed row)                                                                                              | `POST /subscriptions`; one per feed really added by `POST /subscriptions/import`                                    |
-| `subscription`      | `U`             | the patched fields                                                                                                                            | `PATCH /subscriptions`, `PATCH /subscriptions/batch`, `/categories`                                                 |
-| `subscription`      | `D`             | none                                                                                                                                          | `DELETE /subscriptions`, `DELETE /categories` with `deleteSubscriptions`                                            |
-| `list_subscription` | `I` / `U` / `D` | the list subscription row plus `lists` (with `owner.id`)                                                                                      | same routes, list branch; `POST /lists` for the owner; `U { view }` for every subscriber when the list view changes |
-| `collection`        | `I` / `D`       | `{ entryId, feedId, view, createdAt }`                                                                                                        | `/collections`, auto-star rules in the crawler                                                                      |
-| `timeline`          | `U`             | `{ entryIds, read, isInbox, feeds }` for rows that really flipped, 500 ids per row; `feeds` counts them per feed id or inbox handle           | `POST /reads`, `DELETE /reads`, `POST /reads/all`                                                                   |
-| `timeline`          | `N`             | `{ feedId, count, unread, latestPublishedAt, from, entryIds (first 50) }`; `count` is rows really inserted, `unread` those inserted as unread | crawler fan-out, one row per (user, feed) per refresh                                                               |
-| `timeline`          | `N`             | `{ inboxId, isInbox: true, count, unread, entryIds, latestPublishedAt }`                                                                      | new inbox entry from `/inboxes/email` or `/inboxes/webhook`                                                         |
-| `list`              | `U`             | the patched fields, or `{ feedIds }` when membership changed                                                                                  | `PATCH /lists`, `POST /lists/feeds`, `DELETE /lists/feeds`; sent to the owner and every subscriber                  |
-| `list`              | `D`             | none                                                                                                                                          | `DELETE /lists`; sent to the owner and every subscriber, who also drop their subscription                           |
-| `inbox`             | `I` / `U` / `D` | the inbox in `GET /subscriptions` shape, `{ title }`, none                                                                                    | `/inboxes`                                                                                                          |
-| `inbox_entry`       | `D`             | `{ inboxId, unread }`, `unread` says whether the deleted entry was unread                                                                     | `DELETE /entries/inbox`                                                                                             |
+| model               | action          | data                                                                                                                                           | produced by                                                                                                         |
+| ------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `subscription`      | `I`             | the subscription row plus `feeds` (the feed row)                                                                                               | `POST /subscriptions`; one per feed really added by `POST /subscriptions/import`                                    |
+| `subscription`      | `U`             | the patched fields                                                                                                                             | `PATCH /subscriptions`, `PATCH /subscriptions/batch`, `/categories`                                                 |
+| `subscription`      | `D`             | none                                                                                                                                           | `DELETE /subscriptions`, `DELETE /categories` with `deleteSubscriptions`                                            |
+| `list_subscription` | `I` / `U` / `D` | the list subscription row plus `lists` (with `owner.id`)                                                                                       | same routes, list branch; `POST /lists` for the owner; `U { view }` for every subscriber when the list view changes |
+| `collection`        | `I` / `D`       | `{ entryId, feedId, view, createdAt }`                                                                                                         | `/collections`, auto-star rules in the crawler                                                                      |
+| `timeline`          | `U`             | `{ entryIds, read, isInbox, feeds }` for rows that really flipped, 500 ids per row; `feeds` counts them per feed id or inbox handle            | `POST /reads`, `DELETE /reads`, `POST /reads/all`                                                                   |
+| `timeline`          | `N`             | `{ feedId, count, unread, latestPublishedAt, from, entryIds (first 50) }`; `count` is rows really inserted, `unread` those inserted as unread  | crawler fan-out, one row per (user, feed) per refresh                                                               |
+| `timeline`          | `N`             | `{ inboxId, isInbox: true, count, unread, entryIds, latestPublishedAt }`                                                                       | new inbox entry from `/inboxes/email` or `/inboxes/webhook`                                                         |
+| `list`              | `U`             | the patched fields, or `{ feedIds }` when membership changed                                                                                   | `PATCH /lists`, `POST /lists/feeds`, `DELETE /lists/feeds`; sent to the owner and every subscriber                  |
+| `list`              | `D`             | none                                                                                                                                           | `DELETE /lists`; sent to the owner and every subscriber, who also drop their subscription                           |
+| `inbox`             | `I` / `U` / `D` | the inbox in `GET /subscriptions` shape, `{ title }`, none                                                                                     | `/inboxes`                                                                                                          |
+| `inbox_entry`       | `D`             | `{ inboxId, unread }`, `unread` says whether the deleted entry was unread                                                                      | `DELETE /entries/inbox`                                                                                             |
+| `action`            | `U`             | `{ rules }`, the whole rules document                                                                                                          | `PUT /actions`                                                                                                      |
+| `setting`           | `U`             | `{ payload, updatedAt }` for the tab in `modelId`, as `GET /settings` returns it; tabs that hold credentials (`ai`) carry only `{ updatedAt }` | `PATCH /settings/:tab`                                                                                              |
+| `messaging`         | `U` / `D`       | `{ channel }`, never the token                                                                                                                 | `POST /messaging`, `DELETE /messaging`                                                                              |
 
 `N` ("new entries arrived") is the coalesced form of Linear's `I` for timeline rows. The
 crawler writes it after its fan-out transaction commits, in one statement for all
@@ -344,6 +347,20 @@ read first. Anything written between the two calls is replayed by the next delta
   Structural changes still invalidate the affected lists. `useEntriesQuery().refetch` trims
   the infinite query to its first page first, so a refresh costs one request instead of one
   per loaded page.
+- Models the engine does not own register through `sync/model-registry.ts`
+  (`registerSyncModel(model, { bootstrap, apply })`), which has no runtime imports so apps
+  and store modules can use it freely. A model is loaded in full once per account (flag
+  `bootstrapped:<model>` in `sync_meta`), again after a reset, and again when its actions
+  went by before a handler was registered; from then on only `apply` runs. Registered
+  today: `action` in the store (the rules document is kept in `sync_meta` under
+  `model:action` and hydrated at start, and unsaved edits are never replaced), `setting`
+  in each app's settings sync queue (one tab goes through the same last-writer-wins merge
+  as a full sync, a tab with a queued local change is skipped, and a tab logged without its
+  payload is read through `GET /settings`), and `messaging` in the desktop web build.
+- Launch therefore no longer requests `/actions` or `/settings`, and the web build only
+  registers its push token when the token changed or a later `messaging` action shows that
+  another browser took over the channel: the server keeps one token per user and channel,
+  and a registration answers with its sync id so a browser recognises its own.
 - Triggers: launch, `online`, `visibilitychange`, app foreground on mobile, a 60 s interval
   while visible, and 1.5 s after the transaction queue receives an acknowledgement.
 - A 404 from `/sync/state` or `/sync/delta` marks the engine unavailable for the session,

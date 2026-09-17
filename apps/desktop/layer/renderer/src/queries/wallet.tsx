@@ -38,9 +38,12 @@ export const wallet = {
   },
 }
 
-export const useWallet = () =>
+export const useWallet = (options?: { enabled?: boolean }) =>
   useAuthQuery(wallet.get(), {
     refetchOnMount: true,
+    // `useAuthQuery` lets an explicit `enabled` replace its own login check, so only the
+    // "off" case is passed on.
+    ...(options?.enabled === false && { enabled: false }),
   })
 
 export const useWalletTransactions = (query: Parameters<typeof wallet.transactions.get>[0] = {}) =>

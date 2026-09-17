@@ -12,6 +12,7 @@ import { useSubscriptionStore } from "../modules/subscription/store"
 import { unreadActions, unreadSyncService, useUnreadStore } from "../modules/unread/store"
 import { useUserStore } from "../modules/user/store"
 import type { FollowAPI } from "../types"
+import { registerSyncModel } from "./model-registry"
 import { syncEngine } from "./sync-engine"
 import { isSyncEngineActive } from "./sync-status"
 import { transactionQueue } from "./transaction-queue"
@@ -782,6 +783,68 @@ describe("syncEngine", () => {
     expect(useUnreadStore.getState().data["feed-1"]).toBe(4)
     expect(unreadUpsertManyMock).toHaveBeenLastCalledWith([{ id: "feed-1", count: 4 }])
     expect(readsGetMock).not.toHaveBeenCalled()
+  })
+
+  it("bootstraps a registered model once and hands it its actions", async () => {
+    seedCursor(130)
+    const bootstrap = vi.fn(async () => {})
+    const apply = vi.fn()
+    const unregister = registerSyncModel("widget", { bootstrap, apply })
+
+    const widgetAction = createAction({ id: 131, model: "widget", modelId: "w1", data: { n: 1 } })
+    deltaMock.mockResolvedValueOnce(deltaResponse([widgetAction]))
+    await syncEngine.pull("interval")
+
+    expect(apply).toHaveBeenCalledWith(widgetAction)
+    // The account had a cursor but never loaded this model: it is loaded in full once.
+    expect(bootstrap).toHaveBeenCalledTimes(1)
+    expect(syncMetaStore.get("bootstrapped:widget")).toBe("1")
+
+    deltaMock.mockResolvedValueOnce(deltaResponse([], { lastSyncId: 131 }))
+    await syncEngine.pull("interval")
+    expect(bootstrap).toHaveBeenCalledTimes(1)
+
+    unregister()
+  })
+
+  it("loads a model in full again after its actions went by without a handler", async () => {
+    seedCursor(140)
+    syncMetaStore.set("bootstrapped:widget", "1")
+
+    deltaMock.mockResolvedValueOnce(
+      deltaResponse([createAction({ id: 141, model: "widget", modelId: "w1" })]),
+    )
+    await syncEngine.pull("interval")
+    expect(syncMetaStore.has("bootstrapped:widget")).toBe(false)
+
+    const bootstrap = vi.fn(async () => {})
+    const unregister = registerSyncModel("widget", { bootstrap, apply: vi.fn() })
+    deltaMock.mockResolvedValueOnce(deltaResponse([], { lastSyncId: 141 }))
+    await syncEngine.pull("interval")
+
+    expect(bootstrap).toHaveBeenCalledTimes(1)
+    expect(syncMetaStore.get("bootstrapped:widget")).toBe("1")
+    unregister()
+  })
+
+  it("loads registered models during the first bootstrap and retries a failed one", async () => {
+    const bootstrap = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue()
+    const unregister = registerSyncModel("widget", { bootstrap, apply: vi.fn() })
+    stateMock.mockResolvedValue({ code: 0, data: { lastSyncId: 7 } })
+
+    await syncEngine.pull("launch")
+    expect(bootstrap).toHaveBeenCalledTimes(1)
+    expect(syncMetaStore.has("bootstrapped:widget")).toBe(false)
+    expect(syncEngine.getLastSyncId()).toBe(7)
+
+    deltaMock.mockResolvedValueOnce(deltaResponse([], { lastSyncId: 7 }))
+    await syncEngine.pull("interval")
+    expect(bootstrap).toHaveBeenCalledTimes(2)
+    expect(syncMetaStore.get("bootstrapped:widget")).toBe("1")
+    unregister()
   })
 
   it("bootstraps again when the server asks for a reset", async () => {

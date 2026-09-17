@@ -11,6 +11,8 @@ export type SyncActionModelName =
   | "list"
   | "inbox"
   | "inbox_entry"
+  // Models handled through `registerSyncModel`: "action", "setting", "messaging", ...
+  | (string & {})
 
 export type SyncActionType = "I" | "U" | "D" | "N"
 

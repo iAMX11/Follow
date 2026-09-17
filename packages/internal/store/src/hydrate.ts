@@ -1,6 +1,7 @@
 import { initializeDB, migrateDB } from "@follow/database/db"
 
 import type { Hydratable } from "./lib/base"
+import { actionActions } from "./modules/action/store"
 import { collectionActions } from "./modules/collection/store"
 import { entryActions } from "./modules/entry/store"
 import { feedActions } from "./modules/feed/store"
@@ -27,6 +28,7 @@ const hydrates: Hydratable[] = [
   summaryActions,
   translationActions,
   imageActions,
+  actionActions,
 ]
 
 export const hydrateDatabaseToStore = async (options?: { migrateDatabase?: boolean }) => {

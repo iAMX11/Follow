@@ -1,4 +1,5 @@
 import type { Resetable } from "./lib/base"
+import { actionActions } from "./modules/action/store"
 import { collectionActions } from "./modules/collection/store"
 import { entryActions } from "./modules/entry/store"
 import { feedActions } from "./modules/feed/store"
@@ -25,6 +26,7 @@ const resets: Resetable[] = [
   summaryActions,
   translationActions,
   imageActions,
+  actionActions,
   transactionQueue,
   syncEngine,
 ]

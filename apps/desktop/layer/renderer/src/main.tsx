@@ -1,5 +1,7 @@
 import "./wdyr"
 import "./styles/main.css"
+// Registers the "messaging" sync model before the sync engine starts.
+import "./lib/web-push-registration"
 
 import { IN_ELECTRON, WEB_BUILD } from "@follow/shared/constants"
 import {

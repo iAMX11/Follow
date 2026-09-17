@@ -27,6 +27,7 @@ import {
 import { unreadActions, unreadSyncService } from "../modules/unread/store"
 import { whoami } from "../modules/user/getters"
 import { apiMorph } from "../morph/api"
+import { getSyncModelHandler, getSyncModelHandlers } from "./model-registry"
 import { entryReadOverlayKey } from "./overlay-keys"
 import { registerSyncEngine, setSyncEngineActive } from "./sync-status"
 import { isNavigatorOnline, transactionQueue } from "./transaction-queue"
@@ -56,6 +57,8 @@ import type {
 const LAST_SYNC_ID_KEY = "lastSyncId"
 const UNREAD_CALIBRATED_AT_KEY = "unreadCalibratedAt"
 const SUBSCRIPTIONS_CALIBRATED_AT_KEY = "subscriptionsCalibratedAt"
+/** Set once a registered model was loaded in full, so later launches rely on the change log. */
+const modelBootstrappedKey = (model: string) => `bootstrapped:${model}`
 const PULL_INTERVAL_MS = 60_000
 const UNREAD_CALIBRATION_INTERVAL_MS = 60 * 60_000
 const SUBSCRIPTIONS_CALIBRATION_INTERVAL_MS = 24 * 60 * 60_000
@@ -108,6 +111,8 @@ class SyncEngine implements Resetable {
   private unreadCalibratedAt = 0
   private subscriptionsCalibratedAt = 0
   private lastPullFinishedAt = 0
+  /** Models whose actions were skipped this session because nobody handled them yet. */
+  private unhandledModels = new Set<string>()
   private pulling: Promise<void> | null = null
   private pullTimer: ReturnType<typeof setTimeout> | null = null
   private intervalTimer: ReturnType<typeof setInterval> | null = null
@@ -231,7 +236,30 @@ class SyncEngine implements Resetable {
     await this.markCalibrated(SUBSCRIPTIONS_CALIBRATED_AT_KEY)
     await unreadSyncService.resetFromRemote()
     await this.markCalibrated(UNREAD_CALIBRATED_AT_KEY)
+    await this.bootstrapRegisteredModels({ force: true })
     await this.setLastSyncId(lastSyncId)
+  }
+
+  /**
+   * Load registered models that were never loaded in full on this account. With `force`
+   * every model is loaded again, because the engine lost its place in the change log.
+   */
+  private async bootstrapRegisteredModels({ force = false }: { force?: boolean } = {}) {
+    await Promise.all(
+      Array.from(getSyncModelHandlers(), async ([model, handler]) => {
+        if (!handler.bootstrap) return
+        const key = modelBootstrappedKey(model)
+        try {
+          if (!force && (await SyncMetaService.get(key)) !== null) return
+          await handler.bootstrap()
+          await SyncMetaService.set(key, "1")
+          this.unhandledModels.delete(model)
+        } catch (error) {
+          // The flag stays unset, so the next pull tries again.
+          console.error(`[sync-engine] failed to bootstrap ${model}`, error)
+        }
+      }),
+    )
   }
 
   private async calibrateUnread() {
@@ -266,11 +294,9 @@ class SyncEngine implements Resetable {
   /** Forget the cursor. Used on logout; the next start bootstraps again. */
   async reset() {
     this.clearInSession()
-    await Promise.all(
-      [LAST_SYNC_ID_KEY, UNREAD_CALIBRATED_AT_KEY, SUBSCRIPTIONS_CALIBRATED_AT_KEY].map((key) =>
-        SyncMetaService.delete(key),
-      ),
-    ).catch((error) => {
+    // Every key in the table belongs to the engine: the cursor, calibration times, and the
+    // bootstrap flags and documents of registered models.
+    await SyncMetaService.reset().catch((error) => {
       console.error("[sync-engine] failed to clear the sync cursor", error)
     })
   }
@@ -286,6 +312,7 @@ class SyncEngine implements Resetable {
     this.unreadCalibratedAt = 0
     this.subscriptionsCalibratedAt = 0
     this.lastPullFinishedAt = 0
+    this.unhandledModels.clear()
     setSyncEngineActive(false)
   }
 
@@ -328,6 +355,8 @@ class SyncEngine implements Resetable {
       if (!data.hasMore) break
     }
 
+    // After the delta, so a snapshot taken now is never overwritten by an older action.
+    await this.bootstrapRegisteredModels()
     await this.finishPull(summary, reason)
   }
 
@@ -396,9 +425,23 @@ class SyncEngine implements Resetable {
         return
       }
       default: {
-        console.warn(`[sync-engine] ignoring unknown model ${action.model as string}`)
+        await this.applyRegisteredModelAction(action)
       }
     }
+  }
+
+  private async applyRegisteredModelAction(action: SyncAction) {
+    const handler = getSyncModelHandler(action.model)
+    if (handler) {
+      await handler.apply(action)
+      return
+    }
+
+    // Nobody handles this model (yet). Forget that it was bootstrapped, so a handler that
+    // registers later loads it in full instead of trusting a change log it never saw.
+    if (this.unhandledModels.has(action.model)) return
+    this.unhandledModels.add(action.model)
+    await SyncMetaService.delete(modelBootstrappedKey(action.model)).catch(() => {})
   }
 
   private async applySubscriptionAction(action: SyncAction, summary: PullSummary) {
