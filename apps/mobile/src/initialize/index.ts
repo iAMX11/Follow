@@ -6,6 +6,7 @@ import { tracker } from "@follow/tracker"
 import { nativeApplicationVersion } from "expo-application"
 
 import { migrateLegacyApiSession } from "../lib/auth-cookie-migration"
+import { applyStoredAppColorScheme } from "../lib/color-scheme"
 import { settingSyncQueue } from "../modules/settings/sync-queue"
 import { initAnalytics } from "./analytics"
 import { initializeAppCheck } from "./app-check"
@@ -35,6 +36,9 @@ export const initializeApp = async () => {
   console.log(`Initialize...`)
 
   const now = Date.now()
+
+  // Apply the persisted color scheme before the first frame to avoid a theme flash.
+  applyStoredAppColorScheme()
 
   await initDeviceType()
   await initializeDB()

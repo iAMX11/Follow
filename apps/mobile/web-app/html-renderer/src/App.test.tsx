@@ -62,3 +62,46 @@ describe("entry cover image", () => {
     expect(article).toBeNull()
   })
 })
+
+describe("reader style", () => {
+  beforeEach(() => {
+    vi.stubGlobal("bridge", { measure: vi.fn() })
+    window.__FO_BRIDGE__.dispatch("setNoMedia", "false")
+  })
+
+  test("applies font family, line height and text color variables to the article", () => {
+    window.__FO_BRIDGE__.dispatch(
+      "setReaderStyle",
+      JSON.stringify({
+        fontFamily: "ui-serif, serif",
+        lineHeight: 1.5,
+        textColor: {
+          light: { body: "#111111", strong: "#000000" },
+          dark: { body: "#eeeeee", strong: "#ffffff" },
+        },
+      }),
+    )
+    const article = renderEntry({ content: "<p>Body</p>" })
+    const style = article?.getAttribute("style") ?? ""
+
+    expect(style).toContain("font-family:ui-serif, serif")
+    expect(style).toContain("line-height:1.5")
+    expect(style).toContain("--reader-body-light:#111111")
+    expect(style).toContain("--reader-strong-dark:#ffffff")
+    expect(article?.classList.contains("reader-text-color")).toBe(true)
+  })
+
+  test("keeps renderer defaults when the reader style is reset", () => {
+    window.__FO_BRIDGE__.dispatch(
+      "setReaderStyle",
+      JSON.stringify({ fontFamily: "inherit", lineHeight: 1.75, textColor: null }),
+    )
+    const article = renderEntry({ content: "<p>Body</p>" })
+    const style = article?.getAttribute("style") ?? ""
+
+    expect(style).not.toContain("font-family")
+    expect(style).toContain("line-height:1.75")
+    expect(style).not.toContain("--reader-body-light")
+    expect(article?.classList.contains("reader-text-color")).toBe(false)
+  })
+})

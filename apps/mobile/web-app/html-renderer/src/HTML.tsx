@@ -85,6 +85,7 @@ export const HTML = <A extends keyof React.JSX.IntrinsicElements = "div">(props:
             className: clsx(
               "prose max-w-none mx-auto pb-8 [text-autospace:normal]",
               "dark:prose-invert",
+              rest.className,
             ),
           },
           markdownElement,
