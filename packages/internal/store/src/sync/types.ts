@@ -79,7 +79,6 @@ export interface TimelineNewEntriesActionData {
   unread?: number
   latestPublishedAt: string
   from: string[]
-  entryIds?: string[]
 }
 
 export interface ListActionData {
