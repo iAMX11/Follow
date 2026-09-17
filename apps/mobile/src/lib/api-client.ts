@@ -1,10 +1,13 @@
 import { userActions } from "@follow/store/user/store"
+import { trackApiConnection } from "@follow/utils/api-connection"
 import { createMobileAPIHeaders } from "@follow/utils/headers"
 import { FollowClient } from "@follow-app/client-sdk"
 import { fetch } from "expo/fetch"
 import { nativeApplicationVersion } from "expo-application"
 import { Platform } from "react-native"
 import DeviceInfo from "react-native-device-info"
+
+import { setApiUnreachable } from "@/src/atoms/api-connection"
 
 import { getAuthStateRevision, getCookie, getLastAuthStateChangeAt } from "./auth"
 import { getClientId, getSessionId } from "./client-session"
@@ -120,4 +123,9 @@ followClient.addResponseInterceptor(async (ctx) => {
   }
 
   return ctx.response
+})
+
+trackApiConnection(followClient, {
+  onUnreachable: () => setApiUnreachable(true),
+  onRecovered: () => setApiUnreachable(false),
 })

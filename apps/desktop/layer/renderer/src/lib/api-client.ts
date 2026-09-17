@@ -3,10 +3,12 @@ import { IN_ELECTRON } from "@follow/shared/constants"
 import { env } from "@follow/shared/env.desktop"
 import { whoami } from "@follow/store/user/getters"
 import { userActions } from "@follow/store/user/store"
+import { trackApiConnection } from "@follow/utils/api-connection"
 import { createDesktopAPIHeaders } from "@follow/utils/headers"
 import { FollowClient } from "@follow-app/client-sdk"
 import PKG from "@pkg"
 
+import { setApiUnreachable } from "~/atoms/api-connection"
 import { setLoginModalShow } from "~/atoms/user"
 
 import { ipcServices } from "./client"
@@ -121,4 +123,9 @@ followClient.addResponseInterceptor(async ({ response }) => {
   }
 
   return response
+})
+
+trackApiConnection(followClient, {
+  onUnreachable: () => setApiUnreachable(true),
+  onRecovered: () => setApiUnreachable(false),
 })
