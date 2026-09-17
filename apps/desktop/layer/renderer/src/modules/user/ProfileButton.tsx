@@ -55,7 +55,22 @@ export const ProfileButton: FC<ProfileButtonProps> = memo((props) => {
   const isInMASReview = useIsInMASReview()
 
   if (status !== "authenticated" && !user) {
-    return <LoginButton {...props} />
+    return (
+      <>
+        <ActionButton
+          data-testid="guest-settings-button"
+          tooltip={t("user_button.preferences")}
+          shortcut="$mod+,"
+          disableTriggerShortcut
+          onClick={() => {
+            settingModalPresent()
+          }}
+        >
+          <i className="i-mgc-settings-7-cute-re size-5 text-text-secondary" />
+        </ActionButton>
+        <LoginButton {...props} />
+      </>
+    )
   }
 
   return (
