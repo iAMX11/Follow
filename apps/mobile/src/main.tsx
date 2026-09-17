@@ -19,7 +19,7 @@ import { BottomTabProvider } from "./components/layouts/tabbar/BottomTabProvider
 import { ReactNativeTab } from "./components/layouts/tabbar/ReactNativeTab"
 import { Lightbox } from "./components/ui/lightbox/Lightbox"
 import { initializeApp } from "./initialize"
-import { followApi, syncApi } from "./lib/api-client"
+import { followApi } from "./lib/api-client"
 import { authClient } from "./lib/auth"
 import { initializeI18n } from "./lib/i18n"
 import { TabRoot } from "./lib/navigation/bottom-tab/TabRoot"
@@ -41,7 +41,7 @@ global.ELECTRON = false
 authClientContext.provide(authClient)
 queryClientContext.provide(queryClient)
 apiContext.provide(followApi)
-syncApiContext.provide(syncApi)
+syncApiContext.provide(followApi.sync)
 
 enableFreeze(true)
 ;[Image, LinearGradient].forEach((Component) => {

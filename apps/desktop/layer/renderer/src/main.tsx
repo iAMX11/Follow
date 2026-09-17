@@ -20,14 +20,14 @@ import { setAppIsReady } from "./atoms/app"
 import { ElECTRON_CUSTOM_TITLEBAR_HEIGHT } from "./constants"
 import { initializeApp } from "./initialize"
 import { registerAppGlobalShortcuts } from "./initialize/global-shortcuts"
-import { followApi, syncApi } from "./lib/api-client"
+import { followApi } from "./lib/api-client"
 import { queryClient } from "./lib/query-client"
 import { router } from "./router"
 
 authClientContext.provide(authClient)
 queryClientContext.provide(queryClient)
 apiContext.provide(followApi)
-syncApiContext.provide(syncApi)
+syncApiContext.provide(followApi.sync)
 
 initializeApp().finally(() => {
   import("./push-notification").then(({ registerWebPushNotifications }) => {

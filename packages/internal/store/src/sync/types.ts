@@ -1,6 +1,6 @@
 /**
  * Wire types of the server's `/sync` endpoints. They mirror the `sync` module of the client
- * SDK so an app can hand `followApi.sync` to the store once that SDK version ships.
+ * SDK, so the apps hand `followApi.sync` to the store through `syncApiContext`.
  */
 
 export type SyncActionModelName = "subscription" | "list_subscription" | "collection" | "timeline"

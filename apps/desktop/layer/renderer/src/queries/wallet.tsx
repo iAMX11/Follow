@@ -6,6 +6,7 @@ import { useAuthQuery } from "~/hooks/common"
 import { followClient } from "~/lib/api-client"
 import { defineQuery } from "~/lib/defineQuery"
 import { getFetchErrorMessage } from "~/lib/error-parser"
+import { createLegacyWallet } from "~/lib/wallet-compat"
 
 export const wallet = {
   get: () =>
@@ -48,7 +49,7 @@ export const useWalletTransactions = (query: Parameters<typeof wallet.transactio
 export const useCreateWalletMutation = () =>
   useMutation({
     mutationKey: ["createWallet"],
-    mutationFn: () => followClient.api.wallets.post(),
+    mutationFn: () => createLegacyWallet(),
     async onError(err) {
       toast.error(await getFetchErrorMessage(err))
     },

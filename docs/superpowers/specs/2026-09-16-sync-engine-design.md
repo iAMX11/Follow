@@ -295,9 +295,8 @@ read first. Anything written between the two calls is replayed by the next delta
   while visible, and 1.5 s after the transaction queue receives an acknowledgement.
 - A 404 from `/sync/state` or `/sync/delta` marks the engine unavailable for the session,
   so a client running against an older server keeps today's full refetch behaviour.
-- The apps call the endpoints through `followClient.request` (`syncApi` in each app's
-  `api-client.ts`) until the client SDK release that includes the `sync` module lands;
-  the shape matches `followApi.sync` so the swap is a one-line change.
+- The apps hand `followApi.sync` from the client SDK (0.3.96 and later) to the store through
+  `syncApiContext`.
 
 ### Still to do
 
