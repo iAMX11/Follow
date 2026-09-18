@@ -217,6 +217,14 @@ only signal for the crawler, whose fan-out is too large to publish per user. The
 that a "new entries" hint can reach a running client up to five minutes late; changes made
 by the user's own devices are published right away.
 
+The crawler's fan-out is the widest write in the system, and for a popular feed nearly all
+subscribers have no client running. Both delta routes therefore record presence
+(`sync_presence`, one row per user, written after the response and at most every half hour
+per user), and the crawler keeps `N` rows only for users whose device read the log within
+the last two hours. Everyone else recounts and refetches when they come back. Collections
+created by auto-star rules still go to every subscriber, because nothing recomputes them
+later.
+
 Action semantics:
 
 | model               | action          | data                                                                                                                                                      | produced by                                                                                                         |
