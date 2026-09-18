@@ -1,5 +1,5 @@
 import type { FeedViewType } from "@follow/constants"
-import type { InfiniteData, QueryKey } from "@tanstack/react-query"
+import type { InfiniteData, InfiniteQueryObserver, Query, QueryKey } from "@tanstack/react-query"
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import { useCallback, useMemo } from "react"
 
@@ -19,7 +19,12 @@ import {
 } from "./getter"
 import { entrySyncServices, useEntryStore } from "./store"
 import type { EntryModel, FetchEntriesProps, FetchEntriesPropsSettings } from "./types"
-import { getEffectiveEntrySortOrder, isTimelineEntriesSource, mergeEntriesHead } from "./utils"
+import {
+  getEffectiveEntrySortOrder,
+  isTimelineEntriesSource,
+  mergeEntriesHead,
+  trimTrailingEmptyPages,
+} from "./utils"
 
 export const invalidateEntriesQuery = ({
   views,
@@ -96,8 +101,34 @@ const readEntriesQueryKey = (queryKey: QueryKey) => {
 }
 
 /**
- * New entries arrived for these views. Fetch the first page of the entry lists that are on
- * screen and merge it into what is loaded, instead of refetching every loaded page.
+ * An oldest-first list receives new entries at its end. When it was scrolled to the end, the
+ * empty page that marked it is dropped and the page after the last entry is requested again.
+ * A list that still has pages to load picks the new entries up when the user gets there.
+ */
+const refreshEntriesTail = async (query: Query) => {
+  const observer = query.observers.find(
+    (candidate): candidate is InfiniteQueryObserver =>
+      typeof (candidate as InfiniteQueryObserver).fetchNextPage === "function",
+  )
+  if (!observer) return
+
+  const current = query.state.data as EntriesQueryData | undefined
+  const trimmed = trimTrailingEmptyPages(current)
+  if (!trimmed || trimmed.pages.length === 0) return
+  if (trimmed === current && (current.pages.at(-1)?.data?.length ?? 0) > 0) {
+    // The end was never reached; the list still loads on scroll.
+    return
+  }
+  if (trimmed !== current) {
+    queryClient().setQueryData<EntriesQueryData>(query.queryKey, trimmed)
+  }
+  await observer.fetchNextPage({ cancelRefetch: false })
+}
+
+/**
+ * New entries arrived for these views. Fetch the edge of the entry lists that are on screen
+ * where they arrive, the first page of a newest-first list, and merge it into what is loaded,
+ * instead of refetching every loaded page.
  *
  * Lists that are not mounted are left alone: they are fetched again when they are opened.
  */
@@ -126,12 +157,17 @@ export const refreshEntriesHead = async ({
       const params = readEntriesQueryKey(query.queryKey)
       const isCollectionQuery =
         params.isCollection === true || params.feedId === FEED_COLLECTION_LIST
-      // Collections do not change with new entries, an AI sorted page is expensive to
-      // recompute, and an ascending list receives new entries at its far end.
-      if (isCollectionQuery || params.aiSort || params.sortOrder === "asc") return
+      // Collections do not change with new entries, and an AI sorted page is expensive to
+      // recompute.
+      if (isCollectionQuery || params.aiSort) return
       if (!query.isActive() || query.state.fetchStatus === "fetching") return
       if (!query.state.data) return
       if (since !== undefined && query.state.dataUpdatedAt > since) return
+
+      if (params.sortOrder === "asc") {
+        await refreshEntriesTail(query)
+        return
+      }
 
       const head = await entrySyncServices.fetchEntries({
         feedId: params.feedId,

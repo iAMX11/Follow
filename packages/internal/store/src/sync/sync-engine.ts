@@ -113,6 +113,12 @@ class SyncEngine implements Resetable {
   private lastPullFinishedAt = 0
   /** Models whose actions were skipped this session because nobody handled them yet. */
   private unhandledModels = new Set<string>()
+  /**
+   * Views that received new entries while the user was reading. Their lists are left alone
+   * until the next return to the app, which is when they are brought up to date.
+   */
+  private pendingNewEntryViews = new Set<FeedViewType>()
+  private pendingNewestEntryAt = 0
   private pulling: Promise<void> | null = null
   private pullTimer: ReturnType<typeof setTimeout> | null = null
   private intervalTimer: ReturnType<typeof setInterval> | null = null
@@ -156,6 +162,8 @@ class SyncEngine implements Resetable {
 
   /** The network or the app came back: pull as soon as possible. */
   resume() {
+    // Coming back fires more than one event (focus, visibility); one pull covers them.
+    if (this.pulling || Date.now() - this.lastPullFinishedAt < FRESH_PULL_WINDOW_MS) return
     this.schedulePull("resume")
   }
 
@@ -313,6 +321,8 @@ class SyncEngine implements Resetable {
     this.subscriptionsCalibratedAt = 0
     this.lastPullFinishedAt = 0
     this.unhandledModels.clear()
+    this.pendingNewEntryViews.clear()
+    this.pendingNewestEntryAt = 0
     setSyncEngineActive(false)
   }
 
@@ -371,19 +381,28 @@ class SyncEngine implements Resetable {
 
     if (summary.invalidateViews.size > 0) {
       invalidateEntriesQuery({ views: Array.from(summary.invalidateViews) })
+      for (const view of summary.invalidateViews) {
+        this.pendingNewEntryViews.delete(view)
+      }
     }
 
-    // New entries never rearrange what is already loaded, so only the head of the lists on
-    // screen is fetched. While the user is reading, the lists are left alone.
-    const headViews = Array.from(summary.newEntryViews).filter(
-      (view) => !summary.invalidateViews.has(view),
-    )
-    if (headViews.length > 0 && reason !== "interval" && reason !== "ack") {
-      await refreshEntriesHead({ views: headViews, since: summary.newestEntryAt }).catch(
-        (error) => {
-          console.error("[sync-engine] failed to fetch new entries", error)
-        },
-      )
+    // New entries never rearrange what is already loaded, so only the edge of the lists on
+    // screen is fetched. While the user is reading, the lists are left alone and the views
+    // are remembered for the next return to the app.
+    for (const view of summary.newEntryViews) {
+      if (!summary.invalidateViews.has(view)) this.pendingNewEntryViews.add(view)
+    }
+    this.pendingNewestEntryAt = Math.max(this.pendingNewestEntryAt, summary.newestEntryAt)
+    if (reason === "interval" || reason === "ack") return
+
+    const views = Array.from(this.pendingNewEntryViews)
+    const since = this.pendingNewestEntryAt
+    this.pendingNewEntryViews.clear()
+    this.pendingNewestEntryAt = 0
+    if (views.length > 0) {
+      await refreshEntriesHead({ views, since }).catch((error) => {
+        console.error("[sync-engine] failed to fetch new entries", error)
+      })
     }
   }
 
@@ -702,6 +721,9 @@ class SyncEngine implements Resetable {
 
     if (typeof globalThis.addEventListener === "function") {
       globalThis.addEventListener("online", () => this.resume())
+      // Switching back to a desktop window does not change the document's visibility, so
+      // the window's own focus is the return signal there.
+      globalThis.addEventListener("focus", () => this.resume())
     }
     if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
       document.addEventListener("visibilitychange", () => {

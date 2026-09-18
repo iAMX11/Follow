@@ -847,6 +847,58 @@ describe("syncEngine", () => {
     unregister()
   })
 
+  it("brings lists up to date on the next return for entries that arrived while reading", async () => {
+    seedCursor(150)
+    useSubscriptionStore.setState((state) => ({
+      ...state,
+      data: {
+        ...state.data,
+        "feed-1": {
+          feedId: "feed-1",
+          type: "feed",
+          view: FeedViewType.Articles,
+          userId: "user-1",
+        } as never,
+      },
+    }))
+    deltaMock.mockResolvedValueOnce(
+      deltaResponse([
+        createAction({
+          id: 151,
+          model: "timeline",
+          modelId: "feed-1",
+          action: "N",
+          createdAt: "2026-09-18T09:00:00.000Z",
+          data: {
+            feedId: "feed-1",
+            count: 1,
+            unread: 1,
+            latestPublishedAt: "2026-09-18T09:00:00.000Z",
+            from: ["feed"],
+          },
+        }),
+      ]),
+    )
+    await syncEngine.pull("interval")
+    expect(refreshEntriesHeadMock).not.toHaveBeenCalled()
+
+    // Nothing new in the log, but the entries from before are still owed to the lists.
+    deltaMock.mockResolvedValueOnce(deltaResponse([], { lastSyncId: 151 }))
+    await syncEngine.pull("resume")
+
+    expect(refreshEntriesHeadMock).toHaveBeenCalledTimes(1)
+    expect(refreshEntriesHeadMock).toHaveBeenCalledWith({
+      views: expect.arrayContaining([FeedViewType.Articles, FeedViewType.All]),
+      since: Date.parse("2026-09-18T09:00:00.000Z"),
+    })
+
+    deltaMock.mockResolvedValueOnce(deltaResponse([], { lastSyncId: 151 }))
+    syncEngine.clearInSession()
+    seedCursor(151)
+    await syncEngine.pull("resume")
+    expect(refreshEntriesHeadMock).toHaveBeenCalledTimes(1)
+  })
+
   it("bootstraps again when the server asks for a reset", async () => {
     seedCursor(5)
     deltaMock.mockResolvedValue(deltaResponse([], { reset: true, lastSyncId: 5 }))

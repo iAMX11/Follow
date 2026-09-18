@@ -5,6 +5,7 @@ import {
   getMarkReadTimeRange,
   isTimelineEntriesSource,
   mergeEntriesHead,
+  trimTrailingEmptyPages,
 } from "./utils"
 
 describe("getEffectiveEntrySortOrder", () => {
@@ -135,5 +136,28 @@ describe("mergeEntriesHead", () => {
 
   test("leaves a query without data alone", () => {
     expect(mergeEntriesHead(undefined, page("a"))).toBeUndefined()
+  })
+})
+
+describe("trimTrailingEmptyPages", () => {
+  test("drops the empty pages that marked the end of a list", () => {
+    const current = {
+      pages: [page("a", "b"), page("c"), page(), page()],
+      pageParams: [undefined, "p1", "p2", "p3"],
+    }
+
+    const trimmed = trimTrailingEmptyPages(current)
+
+    expect(idsOf(trimmed)).toEqual([["a", "b"], ["c"]])
+    expect(trimmed?.pageParams).toEqual([undefined, "p1"])
+  })
+
+  test("keeps a list that still ends with entries, and never removes the first page", () => {
+    const full = { pages: [page("a"), page("b")], pageParams: [undefined, "p1"] }
+    expect(trimTrailingEmptyPages(full)).toBe(full)
+
+    const empty = { pages: [page()], pageParams: [undefined] }
+    expect(trimTrailingEmptyPages(empty)).toBe(empty)
+    expect(trimTrailingEmptyPages(undefined)).toBeUndefined()
   })
 })

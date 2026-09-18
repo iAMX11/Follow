@@ -189,3 +189,20 @@ export const mergeEntriesHead = <TPage extends EntriesPageLike, TParam>(
 
   return { pages, pageParams }
 }
+
+/**
+ * Drop the empty pages at the end of a list. An oldest-first list that was scrolled to its
+ * end holds one: it is what told the list there was nothing more. Removing it lets the list
+ * ask for the entries after its last one again, which is where new entries arrive.
+ */
+export const trimTrailingEmptyPages = <TPage extends EntriesPageLike, TParam>(
+  current: LoadedEntriesPages<TPage, TParam> | undefined,
+): LoadedEntriesPages<TPage, TParam> | undefined => {
+  if (!current) return current
+  let end = current.pages.length
+  while (end > 1 && (current.pages[end - 1]!.data?.length ?? 0) === 0) {
+    end -= 1
+  }
+  if (end === current.pages.length) return current
+  return { pages: current.pages.slice(0, end), pageParams: current.pageParams.slice(0, end) }
+}

@@ -363,9 +363,15 @@ read first. Anything written between the two calls is replayed by the next delta
   `useSyncUnreadWhenUnMatch` asks for one, at most once a minute, when the list on screen
   still shows more unread entries than the counter after a delta pull.
 - New entries never rearrange what is loaded. On launch, foreground and manual pulls the
-  engine fetches only the first page of the entry lists on screen (`refreshEntriesHead`)
-  and merges it in front of the loaded pages (`mergeEntriesHead`); lists fetched after the
-  `N` was logged are skipped, and background pulls leave lists alone while the user reads.
+  engine fetches only the edge of the entry lists on screen where new entries arrive
+  (`refreshEntriesHead`): the first page of a newest-first list, merged in front of the
+  loaded pages (`mergeEntriesHead`), or the page after the last entry of an oldest-first
+  list that was scrolled to its end (`trimTrailingEmptyPages`). Lists fetched after the
+  `N` was logged are skipped. Background pulls leave lists alone while the user reads and
+  remember the views instead, so the next return to the app catches up even if that
+  pull finds nothing new. "Return" means the document becoming visible, the window
+  gaining focus (a desktop window keeps its visibility when the user switches apps), the
+  network coming back, or the mobile app becoming active.
   Structural changes still invalidate the affected lists. `useEntriesQuery().refetch` trims
   the infinite query to its first page first, so a refresh costs one request instead of one
   per loaded page.
