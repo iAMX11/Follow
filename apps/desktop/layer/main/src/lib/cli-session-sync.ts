@@ -6,6 +6,7 @@ import { promisify } from "node:util"
 import { env } from "@follow/shared/env.desktop"
 import { createAuthRequestOriginHeaders, createDesktopAPIHeaders } from "@follow/utils/headers"
 import PKG from "@pkg"
+import { net } from "electron"
 import { join } from "pathe"
 
 import { WindowManager } from "~/manager/window"
@@ -115,8 +116,9 @@ const generateOneTimeTokenFromCurrentSession = async (): Promise<string | undefi
     return undefined
   }
 
-  const response = await fetch(`${env.VITE_API_URL}/better-auth/one-time-token/generate`, {
+  const response = await net.fetch(`${env.VITE_API_URL}/better-auth/one-time-token/generate`, {
     method: "GET",
+    credentials: "omit",
     headers: getCliSyncRequestHeaders({
       Cookie: cookieHeader,
     }),
@@ -133,8 +135,9 @@ const generateOneTimeTokenFromCurrentSession = async (): Promise<string | undefi
 const resolveSessionTokenFromOneTimeToken = async (
   oneTimeToken: string,
 ): Promise<string | undefined> => {
-  const response = await fetch(`${env.VITE_API_URL}/better-auth/one-time-token/apply`, {
+  const response = await net.fetch(`${env.VITE_API_URL}/better-auth/one-time-token/apply`, {
     method: "POST",
+    credentials: "omit",
     headers: getCliSyncRequestHeaders({
       "content-type": "application/json",
     }),
