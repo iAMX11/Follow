@@ -125,7 +125,16 @@ followClient.addResponseInterceptor(async (ctx) => {
   return ctx.response
 })
 
+/** Whether the API answers at all. Any HTTP status counts; the endpoint needs no session. */
+const probeApiReachability = async () => {
+  await fetch(`${proxyEnv.API_URL}/status/configs`, {
+    signal: AbortSignal.timeout(10_000),
+  })
+  return true
+}
+
 trackApiConnection(followClient, {
+  probe: probeApiReachability,
   onUnreachable: () => setApiUnreachable(true),
   onRecovered: () => setApiUnreachable(false),
 })

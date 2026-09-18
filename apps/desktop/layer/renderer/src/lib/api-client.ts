@@ -132,7 +132,21 @@ followClient.addResponseInterceptor(async ({ response }) => {
   return response
 })
 
+/**
+ * Whether the API answers at all, checked the way ordinary requests travel (through the main
+ * process in Electron). Any HTTP status counts as an answer; the endpoint needs no session.
+ */
+const probeApiReachability = async () => {
+  const request = new Request(new URL("/status/configs", env.VITE_API_URL), {
+    cache: "no-store",
+    signal: AbortSignal.timeout(10_000),
+  })
+  await fetchWithElectronAuth(request)
+  return true
+}
+
 trackApiConnection(followClient, {
+  probe: probeApiReachability,
   onUnreachable: () => setApiUnreachable(true),
   onRecovered: () => setApiUnreachable(false),
 })
