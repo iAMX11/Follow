@@ -1,10 +1,13 @@
 import { userActions } from "@follow/store/user/store"
+import { trackApiConnection } from "@follow/utils/api-connection"
 import { createMobileAPIHeaders } from "@follow/utils/headers"
 import { FollowClient } from "@follow-app/client-sdk"
 import { fetch } from "expo/fetch"
 import { nativeApplicationVersion } from "expo-application"
 import { Platform } from "react-native"
 import DeviceInfo from "react-native-device-info"
+
+import { setApiUnreachable } from "@/src/atoms/api-connection"
 
 import { getAuthStateRevision, getCookie, getLastAuthStateChangeAt } from "./auth"
 import { getClientId, getSessionId } from "./client-session"
@@ -20,6 +23,7 @@ export const followClient = new FollowClient({
 })
 
 export const followApi = followClient.api
+
 followClient.addRequestInterceptor(async (ctx) => {
   const { url } = ctx
 
@@ -119,4 +123,18 @@ followClient.addResponseInterceptor(async (ctx) => {
   }
 
   return ctx.response
+})
+
+/** Whether the API answers at all. Any HTTP status counts; the endpoint needs no session. */
+const probeApiReachability = async () => {
+  await fetch(`${proxyEnv.API_URL}/status/configs`, {
+    signal: AbortSignal.timeout(10_000),
+  })
+  return true
+}
+
+trackApiConnection(followClient, {
+  probe: probeApiReachability,
+  onUnreachable: () => setApiUnreachable(true),
+  onRecovered: () => setApiUnreachable(false),
 })

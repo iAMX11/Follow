@@ -636,6 +636,36 @@ export const PlanScreen: NavigationControllerView = () => {
             )}
           </Pressable>
         )}
+
+        {Platform.OS === "ios" && (
+          <View className="gap-1 px-2">
+            <Text className="text-center text-xs leading-5 text-secondary-label">
+              {t("subscription.legal.auto_renewal_apple")}
+            </Text>
+            <View className="flex-row flex-wrap justify-center gap-x-2">
+              <Pressable
+                accessibilityRole="link"
+                onPress={() =>
+                  void openURL("https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")
+                }
+                className="min-h-11 justify-center px-2"
+              >
+                <Text className="text-center text-sm text-link underline">
+                  {t("subscription.legal.terms_of_use")}
+                </Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="link"
+                onPress={() => void openURL("https://folo.is/privacy-policy")}
+                className="min-h-11 justify-center px-2"
+              >
+                <Text className="text-center text-sm text-link underline">
+                  {t("subscription.legal.privacy_policy")}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
       </View>
     </SafeNavigationScrollView>
   )
@@ -920,7 +950,7 @@ const PlanCard = ({
       </View>
 
       <View className="mt-4 gap-2">
-        {features.map(([featureKey, value]: readonly [PropertyKey, unknown]) => {
+        {features.map(([featureKey, value]) => {
           const formattedValue = formatFeatureValue(featureKey, value, t)
           const showValue = !(typeof value === "boolean" && value)
           return (
