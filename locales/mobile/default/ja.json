@@ -38,6 +38,7 @@
   "login.privacy": "プライバシーポリシー",
   "login.redirecting": "リダイレクト中...",
   "login.sign_up_successful": "サインアップに成功しました",
+  "login.social_sign_in_failed": "{{provider}} でのログインに失敗しました。もう一度お試しください",
   "login.submit": "ログイン",
   "login.terms": "利用規約",
   "onboarding.edit_profile": "プロフィールを編集",

@@ -27,6 +27,7 @@
   "login.privacy": "Politique de confidentialité",
   "login.redirecting": "Redirection...",
   "login.sign_up_successful": "Inscription réussie",
+  "login.social_sign_in_failed": "Impossible de se connecter avec {{provider}}. Veuillez réessayer.",
   "login.submit": "Soumettre",
   "login.terms": "Conditions d'utilisation",
   "onboarding.edit_profile": "Modifier le profil",

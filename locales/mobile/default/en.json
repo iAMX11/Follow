@@ -38,6 +38,7 @@
   "login.privacy": "Privacy Policy",
   "login.redirecting": "Redirecting...",
   "login.sign_up_successful": "Sign up successful",
+  "login.social_sign_in_failed": "Couldn't sign in with {{provider}}. Please try again.",
   "login.submit": "Submit",
   "login.terms": "Terms of Service",
   "onboarding.edit_profile": "Edit Profile",

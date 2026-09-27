@@ -38,6 +38,7 @@
   "login.privacy": "隐私政策",
   "login.redirecting": "正在跳转...",
   "login.sign_up_successful": "注册成功",
+  "login.social_sign_in_failed": "{{provider}} 登录失败，请重试",
   "login.submit": "提交",
   "login.terms": "服务条款",
   "onboarding.edit_profile": "编辑个人资料",
